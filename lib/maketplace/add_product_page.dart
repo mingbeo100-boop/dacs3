@@ -51,7 +51,7 @@ class _AddProductPageState extends State<AddProductPage> {
       // Nhớ kiểm tra lại IP của bạn nhé
       var request = http.MultipartRequest(
         'POST',
-        Uri.parse("http://192.168.1.191/dacs3/add_product.php"),
+        Uri.parse("http://192.168.4.21/dacs3/add_product.php"),
       );
 
       request.fields['user_id'] = widget.userId;

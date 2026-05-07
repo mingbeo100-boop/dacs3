@@ -48,7 +48,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Future<void> _fetchProfileFromSQL() async {
     try {
-      var url = "http://192.168.1.191/dacs3/get_profile.php?user_id=${widget.user['id']}";
+      var url = "http://192.168.4.21/dacs3/get_profile.php?user_id=${widget.user['id']}";
       final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
@@ -84,7 +84,7 @@ class _ProfilePageState extends State<ProfilePage> {
     );
 
     try {
-      var uri = Uri.parse("http://192.168.1.191/dacs3/update_profile.php");
+      var uri = Uri.parse("http://192.168.4.21/dacs3/update_profile.php");
       var request = http.MultipartRequest('POST', uri);
 
       request.fields['user_id'] = widget.user['id'].toString();
@@ -174,7 +174,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           ? NetworkImage(
                           existingAvatarUrl!.contains('http')
                               ? existingAvatarUrl!
-                              : "http://192.168.1.191/dacs3/uploads/profiles/$existingAvatarUrl"
+                              : "http://192.168.4.21/dacs3/uploads/profiles/$existingAvatarUrl"
                       )
                           : null,
                       child: (_image == null && (existingAvatarUrl == null || existingAvatarUrl!.isEmpty))

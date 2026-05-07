@@ -44,7 +44,7 @@ class _MarketplacePageState extends State<MarketplacePage> {
     setState(() => isLoading = true);
 
     try {
-      final response = await http.get(Uri.parse("http://192.168.1.191/dacs3/get_products.php"));
+      final response = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_products.php"));
 
       if (response.statusCode == 200) {
         final dynamic decodedData = jsonDecode(response.body);
@@ -76,7 +76,7 @@ class _MarketplacePageState extends State<MarketplacePage> {
   Future<void> _deleteProduct(String productId) async {
     try {
       final response = await http.post(
-        Uri.parse("http://192.168.1.191/dacs3/delete_product.php"),
+        Uri.parse("http://192.168.4.21/dacs3/delete_product.php"),
         body: {"id": productId},
       );
       final data = jsonDecode(response.body);
@@ -141,7 +141,7 @@ class _MarketplacePageState extends State<MarketplacePage> {
         itemCount: products.length,
         itemBuilder: (context, index) {
           final item = products[index];
-          String imageUrl = "http://192.168.1.191/dacs3/uploads/${item['image_url']}";
+          String imageUrl = "http://192.168.4.21/dacs3/uploads/${item['image_url']}";
 
           return InkWell(
             onTap: () async {

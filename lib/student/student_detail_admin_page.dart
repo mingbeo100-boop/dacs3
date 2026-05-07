@@ -51,7 +51,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
     try {
       int monthInt = int.parse(selectedMonth.replaceAll(RegExp(r'[^0-9]'), ''));
       final response = await http.get(
-        Uri.parse("http://192.168.1.191/dacs3/get_student_status.php?user_id=${widget.student['user_id']}&month=$monthInt&year=$selectedYear"),
+        Uri.parse("http://192.168.4.21/dacs3/get_student_status.php?user_id=${widget.student['user_id']}&month=$monthInt&year=$selectedYear"),
       );
 
       if (response.statusCode == 200) {
@@ -75,7 +75,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
     setState(() => isLoading = true);
     try {
       final response = await http.post(
-        Uri.parse("http://192.168.1.191/dacs3/update_student_all_status.php"),
+        Uri.parse("http://192.168.4.21/dacs3/update_student_all_status.php"),
         body: {
           "user_id": widget.student['user_id'].toString(),
           "month": selectedMonth,
@@ -120,7 +120,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
     try {
     setState(() => isLoading = true);
     final response = await http.post(
-    Uri.parse("http://192.168.1.191/dacs3/manage_notifications.php"),
+    Uri.parse("http://192.168.4.21/dacs3/manage_notifications.php"),
     body: {
     "user_id": widget.student['user_id'].toString(),
     "title": title,
@@ -149,7 +149,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
   Widget build(BuildContext context) {
     String? avatarPath = widget.student['avatar_url'];
     String fullAvatarUrl = (avatarPath != null && avatarPath.isNotEmpty)
-        ? (avatarPath.startsWith('http') ? avatarPath : "http://192.168.1.191/dacs3/uploads/$avatarPath")
+        ? (avatarPath.startsWith('http') ? avatarPath : "http://192.168.4.21/dacs3/uploads/$avatarPath")
         : "";
 
     return Scaffold(

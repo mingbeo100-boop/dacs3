@@ -12,6 +12,7 @@ import '../profile_page.dart';
 import '../admin/admin_student_list_page.dart';
 import '../student/student_status_page.dart';
 import '../student/notification_page.dart';
+import '../admin/admin_device_summary_page.dart';
 
 class HomePage extends StatefulWidget {
   final dynamic user;
@@ -37,12 +38,12 @@ class _HomePageState extends State<HomePage> {
 
   // Quản lý trạng thái chuyển trang (Cố định BottomNav)
   int _selectedIndex = 0;
+  // BIẾN LƯU THÔNG KÊ THỰC TẾ
   Map<String, dynamic> adminStats = {"devices": "0", "requests": "0", "residents": "0"};
 
   @override
   void initState() {
     super.initState();
-    // Đảm bảo currentUser lấy từ widget.user để tránh lỗi null
     currentUser = widget.user;
     displayRoom = currentUser['room_id']?.toString() ?? "Chưa rõ";
     _initData();
@@ -53,23 +54,41 @@ class _HomePageState extends State<HomePage> {
     await _refreshUserData();
     await _loadAllNews();
     if (currentUser['role'] == 'admin') {
-      await _loadAdminStats();
+      await _loadAdminStats(); // Cập nhật số thực tế tại đây
     } else {
       await _checkPrivateNotifications();
     }
   }
 
+  // SỬA CHỨC NĂNG: Gọi API thực tế
   Future<void> _loadAdminStats() async {
     try {
-      final res = await http.get(Uri.parse("http://192.168.1.191/dacs3/get_admin_home_stats.php"));
-      if (res.statusCode == 200) setState(() => adminStats = jsonDecode(res.body));
-    } catch (e) { debugPrint("Lỗi stats: $e"); }
+      // 1. Kiểm tra kỹ IP: Nếu chạy máy ảo Android thì dùng 10.0.2.2
+      // Nếu chạy máy thật thì dùng IP 192.168.4.21 (đảm bảo máy tính và điện thoại cùng Wifi)
+      final res = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_admin_home_stats.php"))
+          .timeout(const Duration(seconds: 5)); // Thêm timeout để tránh treo
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        setState(() {
+          // Gán giá trị và ép kiểu về String để hiển thị
+          adminStats = {
+            "devices": (data['devices'] ?? 0).toString(),
+            "requests": (data['requests'] ?? 0).toString(),
+            "residents": (data['residents'] ?? 0).toString(),
+          };
+        });
+        print("Dữ liệu Admin Stats mới: $adminStats");
+      }
+    } catch (e) {
+      print("Lỗi kết nối stats: $e");
+    }
   }
 
   Future<void> _checkPrivateNotifications() async {
     if (currentUser['role'] == 'admin') return;
     try {
-      final res = await http.get(Uri.parse("http://192.168.1.191/dacs3/manage_notifications.php?user_id=${currentUser['id']}"));
+      final res = await http.get(Uri.parse("http://192.168.4.21/dacs3/manage_notifications.php?user_id=${currentUser['id']}"));
       if (res.statusCode == 200) setState(() => unreadCount = jsonDecode(res.body)['unread_count'] ?? 0);
     } catch (e) { debugPrint(e.toString()); }
   }
@@ -78,12 +97,11 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     setState(() => isNewsLoading = true);
     try {
-      final res = await http.get(Uri.parse("http://192.168.1.191/dacs3/manage_news.php?all=true"));
+      final res = await http.get(Uri.parse("http://192.168.4.21/dacs3/manage_news.php?all=true"));
       if (res.statusCode == 200) setState(() { ktxNewsList = jsonDecode(res.body)['news_list'] ?? []; isNewsLoading = false; });
     } catch (e) { if (mounted) setState(() => isNewsLoading = false); }
   }
 
-  // --- AI NHẬN DIỆN ICON ---
   Map<String, dynamic> _analyzeNotificationAI(String content) {
     String text = content.toLowerCase();
     final Map<String, Map<String, dynamic>> aiBrain = {
@@ -104,7 +122,6 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    // Điều hướng Tab chính cố định thanh dưới
     final List<Widget> pages = [
       _buildHomeContent(),
       MarketplacePage(userId: currentUser['id'].toString(), role: currentUser['role']),
@@ -123,7 +140,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // Nội dung trang chủ
   Widget _buildHomeContent() {
     String roomId = currentUser['room_id']?.toString() ?? displayRoom;
     String userId = currentUser['id']?.toString() ?? '0';
@@ -137,7 +153,6 @@ class _HomePageState extends State<HomePage> {
         slivers: [
           _buildSliverHeader(userRole, userId),
 
-          // 1. FEATURE CARD (Sửa Navigator truyền user)
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(25, 20, 25, 10),
@@ -152,7 +167,6 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // 2. GRID DỊCH VỤ (Đã fix truyền user để tránh lỗi image_6775e8.png)
           SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 10),
             sliver: SliverGrid.count(
@@ -166,14 +180,14 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // 3. STAT CARDS CHO ADMIN (Đã fix truyền user)
+          // --- 3 Ô THỐNG KÊ (DÙNG adminStats THỰC TẾ) ---
           if (userRole == 'admin')
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(25, 15, 25, 5),
                 child: Row(
                   children: [
-                    _buildStatCard(adminStats['devices'].toString(), "Thiết bị", Icons.auto_graph_rounded, vkuOrange, () => Navigator.push(context, MaterialPageRoute(builder: (context) => VirtualDevicePage(roomId: "Admin", roomName: "Toàn KTX")))),
+                    _buildStatCard(adminStats['devices'].toString(), "Thiết bị", Icons.auto_graph_rounded, vkuOrange, () => Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminDeviceSummaryPage()))),
                     const SizedBox(width: 12),
                     _buildStatCard(adminStats['requests'].toString(), "Hỏng hóc", Icons.build_rounded, Colors.brown, () => Navigator.push(context, MaterialPageRoute(builder: (context) => TicketPage(user: currentUser)))),
                     const SizedBox(width: 12),
@@ -198,7 +212,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- CÁC WIDGET THÀNH PHẦN ---
   Widget _buildBottomNav() {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12),
@@ -269,12 +282,11 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- CÁC HÀM CÒN LẠI (GIỮ NGUYÊN) ---
   Widget _buildNewsCardAI(dynamic news, String role) { final ai = _analyzeNotificationAI(news['content'] ?? ""); return Container(margin: const EdgeInsets.fromLTRB(25, 0, 25, 15), padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(30), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 15, offset: const Offset(0, 8))]), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: (ai['color'] as Color).withOpacity(0.1), shape: BoxShape.circle), child: Icon(ai['icon'], color: ai['color'], size: 22)), const SizedBox(width: 15), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(ai['label'], style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 13)), if (role == 'admin') IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: const Icon(Icons.delete_sweep_rounded, color: Colors.redAccent, size: 18), onPressed: () => _confirmDeleteNews(news['id']))]), const Text("Vừa cập nhật", style: TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)), const SizedBox(height: 8), Text(news['content'], style: TextStyle(color: darkText.withOpacity(0.8), fontSize: 12, fontWeight: FontWeight.w500, height: 1.5))]))])); }
   Widget _buildNewsTitleSection() => SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.fromLTRB(25, 25, 25, 15), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Container(width: 5, height: 20, decoration: BoxDecoration(color: vkuOrange, borderRadius: BorderRadius.circular(10))), const SizedBox(width: 12), const Text("TIN TỨC KTX", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 15))]), TextButton(onPressed: () {}, child: const Text("Tất cả", style: TextStyle(color: vkuOrange, fontWeight: FontWeight.bold, fontSize: 13)))])));
-  void _confirmDeleteNews(dynamic newsId) { showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Xóa tin tức?"), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), TextButton(onPressed: () async { await http.delete(Uri.parse("http://192.168.1.191/dacs3/manage_news.php?id=$newsId")); Navigator.pop(context); _loadAllNews(); }, child: const Text("XÓA", style: TextStyle(color: Colors.red)))])); }
-  void _showNotificationDialog() { TextEditingController newsController = TextEditingController(); showDialog(context: context, builder: (context) => AlertDialog(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)), title: const Text("PHÁT TIN KTX MỚI", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w900)), content: TextField(controller: newsController, maxLines: 4, decoration: InputDecoration(hintText: "Nhập nội dung...", filled: true, fillColor: Colors.grey[100], border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none))), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: vkuOrange, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), onPressed: () async { if (newsController.text.trim().isEmpty) return; await http.post(Uri.parse("http://192.168.1.191/dacs3/manage_news.php"), body: {"content": newsController.text.trim()}); Navigator.pop(context); _loadAllNews(); }, child: const Text("GỬI", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))], )); }
-  Future<void> _refreshUserData() async { try { final res = await http.get(Uri.parse("http://192.168.1.191/dacs3/get_profile.php?user_id=${currentUser['id']}")); if (res.statusCode == 200) { final data = jsonDecode(res.body); setState(() { currentUser['fullname'] = data['fullname'] ?? currentUser['fullname']; currentUser['avatar_url'] = data['avatar_url']; displayRoom = (data['room_number'] ?? data['room_id'] ?? "Chưa rõ").toString(); }); } } catch (e) { debugPrint(e.toString()); } }
+  void _confirmDeleteNews(dynamic newsId) { showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Xóa tin tức?"), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), TextButton(onPressed: () async { await http.delete(Uri.parse("http://192.168.4.21/dacs3/manage_news.php?id=$newsId")); Navigator.pop(context); _loadAllNews(); }, child: const Text("XÓA", style: TextStyle(color: Colors.red)))])); }
+  void _showNotificationDialog() { TextEditingController newsController = TextEditingController(); showDialog(context: context, builder: (context) => AlertDialog(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)), title: const Text("PHÁT TIN KTX MỚI", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w900)), content: TextField(controller: newsController, maxLines: 4, decoration: InputDecoration(hintText: "Nhập nội dung...", filled: true, fillColor: Colors.grey[100], border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none))), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: vkuOrange, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), onPressed: () async { if (newsController.text.trim().isEmpty) return; await http.post(Uri.parse("http://192.168.4.21/dacs3/manage_news.php"), body: {"content": newsController.text.trim()}); Navigator.pop(context); _loadAllNews(); }, child: const Text("GỬI", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))], )); }
+  Future<void> _refreshUserData() async { try { final res = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_profile.php?user_id=${currentUser['id']}")); if (res.statusCode == 200) { final data = jsonDecode(res.body); setState(() { currentUser['fullname'] = data['fullname'] ?? currentUser['fullname']; currentUser['avatar_url'] = data['avatar_url']; displayRoom = (data['room_number'] ?? data['room_id'] ?? "Chưa rõ").toString(); }); } } catch (e) { debugPrint(e.toString()); } }
   Widget _buildTopIconButton(IconData icon, {VoidCallback? onTap}) { return Container(decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(15)), child: IconButton(onPressed: onTap, icon: Icon(icon, color: vkuBlue, size: 24))); }
   Widget _buildFeatureCard({required String title, required String subtitle, required IconData icon, required VoidCallback onTap}) { return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(28), child: Container(padding: const EdgeInsets.all(22), decoration: BoxDecoration(color: vkuBlue, borderRadius: BorderRadius.circular(28), boxShadow: [BoxShadow(color: vkuBlue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))]), child: Row(children: [Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), borderRadius: BorderRadius.circular(15)), child: Icon(icon, color: Colors.white, size: 26)), const SizedBox(width: 18), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)), Text(subtitle, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)])), const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white, size: 16)]))); }
 }

@@ -35,7 +35,7 @@ class _StudentSurveyPageState extends State<StudentSurveyPage> {
     setState(() => isSubmitting = true);
     try {
       final response = await http.post(
-        Uri.parse("http://192.168.1.191/dacs3/save_preferences.php"),
+        Uri.parse("http://192.168.4.21/dacs3/save_preferences.php"),
         body: {
           "user_id": widget.user['id'].toString(),
           "sleep_time": preferences["sleep_time"].toString(),

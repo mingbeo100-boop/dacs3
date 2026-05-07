@@ -47,7 +47,7 @@
         int monthNum = int.parse(filterMonth.replaceAll(RegExp(r'[^0-9]'), ''));
         // LƯU Ý: Kiểm tra lại IP máy tính chạy XAMPP của ông
         final response = await http.get(Uri.parse(
-            "http://192.168.1.191/dacs3/get_all_students.php?month=$monthNum&year=$filterYear"
+            "http://192.168.4.21/dacs3/get_all_students.php?month=$monthNum&year=$filterYear"
         ));
 
         if (response.statusCode == 200) {
@@ -283,7 +283,7 @@
       // --- Xử lý Avatar URL ---
       String? avatarPath = student['avatar_url'];
       String fullAvatarUrl = (avatarPath != null && avatarPath.isNotEmpty)
-          ? (avatarPath.startsWith('http') ? avatarPath : "http://192.168.1.191/dacs3/uploads/$avatarPath")
+          ? (avatarPath.startsWith('http') ? avatarPath : "http://192.168.4.21/dacs3/uploads/$avatarPath")
           : "";
 
       return GestureDetector(

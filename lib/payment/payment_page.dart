@@ -57,7 +57,7 @@ class _PaymentPageState extends State<PaymentPage> {
 
     try {
       // 1. Kiểm tra lại IP máy tính của ông (quan trọng nhất)
-      var uri = Uri.parse("http://192.168.1.191/dacs3/upload_receipt.php");
+      var uri = Uri.parse("http://192.168.4.21/dacs3/upload_receipt.php");
       var request = http.MultipartRequest('POST', uri);
 
       // 2. Gửi các field khớp với file PHP đã viết

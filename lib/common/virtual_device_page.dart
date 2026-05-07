@@ -55,7 +55,7 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
   Future<void> _syncDevicesFromDB() async {
     try {
       // Gọi API lấy thiết bị dựa theo tên phòng (widget.roomId bây giờ là "2_302")
-      final response = await http.get(Uri.parse("http://192.168.1.191/dacs3/get_devices.php?room_id=${widget.roomId}"));
+      final response = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_devices.php?room_id=${widget.roomId}"));
       if (response.statusCode == 200) {
         List<dynamic> deviceList = jsonDecode(response.body);
         setState(() {
@@ -112,7 +112,7 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     // 2. Cập nhật vào DB (Gửi room_id và device_type để PHP tìm đúng thiết bị)
     try {
       await http.post(
-          Uri.parse("http://192.168.1.191/dacs3/toggle_and_save_power.php"),
+          Uri.parse("http://192.168.4.21/dacs3/toggle_and_save_power.php"),
           body: {
             "room_id": widget.roomName, // VD: "2_302"
             "device_type": deviceType,  // VD: "light"
