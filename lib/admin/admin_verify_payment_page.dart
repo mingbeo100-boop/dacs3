@@ -10,7 +10,7 @@ class AdminVerifyPaymentPage extends StatefulWidget {
 }
 
 class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
-  final String baseUrl = "http://192.168.4.21/dacs3";
+  final String baseUrl = "http://10.60.56.48/dacs3";
   static const vkuBlue = Color(0xFF072C6C);
   static const vkuOrange = Color(0xFFFF8C00);
   static const sandBg = Color(0xFFF5E1C5);

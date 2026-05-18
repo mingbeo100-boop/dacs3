@@ -49,7 +49,7 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
 
   Future<void> _fetchPendingPayments() async {
     try {
-      final response = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_pending_invoices.php"));
+      final response = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_pending_invoices.php"));
       if (response.statusCode == 200) {
         final res = jsonDecode(response.body);
         if (mounted) setState(() => pendingPayments = res['data'] ?? []);
@@ -62,7 +62,7 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
     setState(() => isLoading = true);
     try {
       final response = await http.get(
-          Uri.parse("http://192.168.4.21/dacs3/get_admin_usage.php?month=$filterMonth&year=$filterYear")
+          Uri.parse("http://10.60.56.48/dacs3/get_admin_usage.php?month=$filterMonth&year=$filterYear")
       );
       if (response.statusCode == 200) {
         var result = jsonDecode(response.body);
@@ -125,7 +125,7 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
       setState(() => isLoading = true);
       try {
         final res = await http.post(
-          Uri.parse("http://192.168.4.21/dacs3/notify_high_usage.php"),
+          Uri.parse("http://10.60.56.48/dacs3/notify_high_usage.php"),
           body: {
             "rooms": jsonEncode(highUsageRooms),
             "usage_limit": powerLimit.toStringAsFixed(1),
@@ -199,7 +199,7 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
                     // NÚT CHỐT SỐ ĐIỆN
                     GestureDetector(
                         onTap: () async {
-                          final res = await http.get(Uri.parse("http://192.168.4.21/dacs3/cron_monthly_save.php"));
+                          final res = await http.get(Uri.parse("http://10.60.56.48/dacs3/cron_monthly_save.php"));
                           if (res.statusCode == 200) { _fetchAllAdminData(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Đã kích hoạt chốt số điện!"))); }
                         },
                         child: Container(padding: const EdgeInsets.all(15), decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), shape: BoxShape.circle), child: const Icon(Icons.bolt_rounded, color: vkuOrange, size: 30))

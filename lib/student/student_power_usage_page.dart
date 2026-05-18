@@ -36,7 +36,7 @@ class _StudentPowerUsagePageState extends State<StudentPowerUsagePage> {
     if (!mounted) return;
     setState(() => isLoading = true);
     try {
-      final response = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_student_power.php?room_id=$roomName"));
+      final response = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_student_power.php?room_id=$roomName"));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         List<dynamic> history = data['seven_day_history'] ?? [0,0,0,0,0,0,0];

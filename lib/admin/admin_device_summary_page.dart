@@ -19,7 +19,7 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
   bool isLoading = true;
 
   // Địa chỉ IP Server của ông
-  final String apiUrl = "http://192.168.4.21/dacs3/get_device_stats_by_room.php";
+  final String apiUrl = "http://10.60.56.48/dacs3/get_device_stats_by_room.php";
 
   @override
   void initState() {

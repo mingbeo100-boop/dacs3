@@ -44,7 +44,7 @@ class _RegisterPageState extends State<RegisterPage> {
     try {
       // CẬP NHẬT IP CỦA NHẬT LONG: 192.168.1.14
       final response = await http.post(
-        Uri.parse("http://192.168.4.21/dacs3/register.php"),
+        Uri.parse("http://10.60.56.48/dacs3/register.php"),
         body: {
           "fullname": _nameController.text.trim(),
           "username": _usernameController.text.trim(),
@@ -78,7 +78,7 @@ class _RegisterPageState extends State<RegisterPage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Không thể kết nối đến máy chủ 192.168.4.21!")),
+        const SnackBar(content: Text("Không thể kết nối đến máy chủ 10.60.56.48!")),
       );
     } finally {
       setState(() => _isLoading = false);

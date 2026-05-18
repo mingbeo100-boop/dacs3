@@ -9,22 +9,20 @@ class MarketplacePage extends StatefulWidget {
   final String userId;
   final String role;
 
-  const MarketplacePage({
-    super.key,
-    required this.userId,
-    required this.role
-  });
+  const MarketplacePage({super.key, required this.userId, required this.role});
+
+  static List<dynamic>? cachedProducts;
 
   @override
   State<MarketplacePage> createState() => _MarketplacePageState();
 }
 
 class _MarketplacePageState extends State<MarketplacePage> {
-  List products = []; // Đây là một List
-  bool isLoading = true;
+  List<dynamic> products = MarketplacePage.cachedProducts ?? [];
+  bool isLoading = MarketplacePage.cachedProducts == null;
 
-  // --- HỆ MÀU ĐỒNG BỘ VKU SMART DORM ---
   static const vkuBlue = Color(0xFF002266);
+  static const vkuOrange = Color(0xFFFF8C00);
   static const sandBg = Color(0xFFF5E1C5);
   static const cardBg = Color(0xFFFFF8F0);
   static const marketAccent = Color(0xFF81A4B1);
@@ -38,61 +36,38 @@ class _MarketplacePageState extends State<MarketplacePage> {
     fetchProducts();
   }
 
-  // --- HÀM LOAD SẢN PHẨM (ĐÃ FIX LỖI ÉP KIỂU) ---
   Future<void> fetchProducts() async {
-    if (!mounted) return;
-    setState(() => isLoading = true);
+    if (products.isEmpty) setState(() => isLoading = true);
 
     try {
-      final response = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_products.php"));
+      final response = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_products.php"))
+          .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
         final dynamic decodedData = jsonDecode(response.body);
+        List<dynamic> newList = [];
 
-        setState(() {
-          // Kiểm tra xem Server trả về List hay Map để gán cho đúng
-          if (decodedData is List) {
-            products = decodedData;
-          } else if (decodedData is Map && decodedData.containsKey('data')) {
-            // Trường hợp PHP trả về {"status": "success", "data": [...]}
-            products = decodedData['data'];
-          } else {
-            products = [];
-            debugPrint("Dữ liệu không đúng định dạng List: $decodedData");
-          }
-          isLoading = false;
-        });
-      } else {
-        setState(() => isLoading = false);
-        debugPrint("Lỗi Server: ${response.statusCode}");
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => isLoading = false);
-      debugPrint("Lỗi kết nối Marketplace: $e");
-    }
-  }
+        if (decodedData is List) {
+          newList = decodedData;
+        } else if (decodedData is Map && decodedData.containsKey('data')) {
+          newList = decodedData['data'];
+        }
 
-  Future<void> _deleteProduct(String productId) async {
-    try {
-      final response = await http.post(
-        Uri.parse("http://192.168.4.21/dacs3/delete_product.php"),
-        body: {"id": productId},
-      );
-      final data = jsonDecode(response.body);
-      if (data['status'] == 'success') {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("✅ Đã xóa bài đăng thành công!"),
-            backgroundColor: vkuBlue,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        fetchProducts();
+
+        // Chỉ setState nếu dữ liệu thực sự thay đổi để giữ 120 FPS
+        if (newList.length != products.length || newList.toString() != products.toString()) {
+          setState(() {
+            products = newList;
+            MarketplacePage.cachedProducts = products;
+            isLoading = false;
+          });
+        } else {
+          setState(() => isLoading = false);
+        }
       }
     } catch (e) {
-      debugPrint("Lỗi xóa: $e");
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -100,179 +75,146 @@ class _MarketplacePageState extends State<MarketplacePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: sandBg,
-      appBar: AppBar(
-        title: const Text("CHỢ SINH VIÊN VKU",
-            style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
-        backgroundColor: sandBg,
-        elevation: 0,
-        centerTitle: true,
-        iconTheme: const IconThemeData(color: vkuBlue),
-        actions: [
-          IconButton(
-              icon: const Icon(Icons.refresh_rounded),
-              onPressed: fetchProducts
-          )
-        ],
-      ),
-      floatingActionButton: isAdmin
-          ? FloatingActionButton(
-        backgroundColor: vkuBlue,
-        onPressed: () async {
-          bool? refresh = await Navigator.push(context, MaterialPageRoute(
-            builder: (context) => AddProductPage(userId: widget.userId),
-          ));
-          if (refresh == true) fetchProducts();
-        },
-        child: const Icon(Icons.add_photo_alternate_rounded, color: Colors.white),
-      )
-          : null,
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator(color: vkuBlue))
-          : products.isEmpty
-          ? const Center(child: Text("Chưa có món đồ nào.", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.bold)))
-          : GridView.builder(
-        padding: const EdgeInsets.all(20),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          childAspectRatio: 0.72,
-          crossAxisSpacing: 18,
-          mainAxisSpacing: 18,
-        ),
-        itemCount: products.length,
-        itemBuilder: (context, index) {
-          final item = products[index];
-          String imageUrl = "http://192.168.4.21/dacs3/uploads/${item['image_url']}";
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: fetchProducts,
+          color: vkuOrange,
+          child: CustomScrollView(
+            // Vật lý cuộn 120Hz
+            physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+            cacheExtent: 1500, // Tải trước các card ở dưới 1.5 màn hình
+            slivers: [
+              _buildSliverAppBar(),
 
-          return InkWell(
-            onTap: () async {
-              if (isAdmin) {
-                bool? refresh = await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => EditProductPage(product: item)),
-                );
-                if (refresh == true) fetchProducts();
-              } else {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => ProductDetailPage(product: item)),
-                );
-              }
-            },
-            borderRadius: BorderRadius.circular(24),
-            child: Container(
-              decoration: BoxDecoration(
-                color: cardBg,
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: marketAccent.withOpacity(0.2)),
-                boxShadow: [
-                  BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 10,
-                      offset: const Offset(0, 5)
-                  )
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        ClipRRect(
-                          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                          child: Image.network(
-                            imageUrl,
-                            fit: BoxFit.cover,
-                            width: double.infinity,
-                            height: double.infinity,
-                            errorBuilder: (context, error, stackTrace) =>
-                                Container(
-                                    color: marketAccent.withOpacity(0.1),
-                                    child: const Icon(Icons.image_not_supported_rounded, color: marketAccent)
-                                ),
-                          ),
-                        ),
-                        if (isAdmin)
-                          Positioned(
-                            top: 8,
-                            right: 8,
-                            child: GestureDetector(
-                              onTap: () => _confirmDelete(item),
-                              child: Container(
-                                padding: const EdgeInsets.all(6),
-                                decoration: const BoxDecoration(
-                                    color: priceRed,
-                                    shape: BoxShape.circle
-                                ),
-                                child: const Icon(Icons.delete_outline, color: Colors.white, size: 16),
-                              ),
-                            ),
-                          ),
-                      ],
+              if (isLoading && products.isEmpty)
+                const SliverFillRemaining(child: Center(child: CircularProgressIndicator(color: vkuBlue)))
+              else
+                SliverPadding(
+                  padding: const EdgeInsets.all(15),
+                  sliver: SliverGrid(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      childAspectRatio: 0.72,
+                      crossAxisSpacing: 15,
+                      mainAxisSpacing: 15,
+                    ),
+                    delegate: SliverChildBuilderDelegate(
+                          (context, index) => _buildOptimizedProductItem(products[index]),
+                      childCount: products.length,
                     ),
                   ),
-                  Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                            item['title'] ?? "Sản phẩm",
-                            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14, color: vkuBlue),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          "${item['price']} VNĐ",
-                          style: const TextStyle(color: priceRed, fontWeight: FontWeight.w900, fontSize: 15),
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            const Icon(Icons.person_pin_circle_rounded, size: 14, color: marketAccent),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                item['fullname'] ?? "Ẩn danh",
-                                style: const TextStyle(fontSize: 11, color: Colors.blueGrey, fontWeight: FontWeight.w600),
-                                maxLines: 1,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  )
-                ],
+                ),
+            ],
+          ),
+        ),
+      ),
+      floatingActionButton: isAdmin ? _buildFab() : null,
+    );
+  }
+
+  Widget _buildSliverAppBar() {
+    return SliverToBoxAdapter(
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 20, 10, 10),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            const Text(
+              "CHỢ SINH VIÊN VKU",
+              style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 1.2),
+            ),
+            Positioned(
+              right: 10,
+              child: IconButton(
+                icon: const Icon(Icons.refresh_rounded, color: vkuBlue, size: 22),
+                onPressed: fetchProducts,
               ),
             ),
-          );
-        },
+          ],
+        ),
       ),
     );
   }
 
-  void _confirmDelete(dynamic item) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: cardBg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: const Text("Xác nhận xóa?", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.bold)),
-        content: Text("Bạn muốn gỡ '${item['title']}' khỏi hệ thống?"),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Hủy", style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _deleteProduct(item['id'].toString());
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: priceRed, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-            child: const Text("Xóa", style: TextStyle(color: Colors.white)),
+  Widget _buildOptimizedProductItem(dynamic item) {
+    String imageUrl = "http://10.60.56.48/dacs3/uploads/${item['image_url']}";
+
+    // RepaintBoundary: Cô lập pixel vẽ, chìa khóa của sự mượt mà
+    return RepaintBoundary(
+      child: InkWell(
+        onTap: () async {
+          bool? refresh = await Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (context) => isAdmin ? EditProductPage(product: item) : ProductDetailPage(product: item)
+            ),
+          );
+          if (refresh == true) fetchProducts();
+        },
+        borderRadius: BorderRadius.circular(24),
+        child: Container(
+          decoration: BoxDecoration(
+            color: cardBg,
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10, offset: const Offset(0, 4))],
           ),
-        ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    cacheWidth: 350, // Ép ảnh nhỏ lại trong RAM (Rất quan trọng)
+                    filterQuality: FilterQuality.low, // Tăng tốc độ render khi cuộn
+                    errorBuilder: (c, e, s) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image)),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(item['title'] ?? "Sản phẩm",
+                        style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: vkuBlue),
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 4),
+                    Text("${item['price']} đ",
+                        style: const TextStyle(color: priceRed, fontWeight: FontWeight.w900, fontSize: 14)),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(Icons.person_pin_circle_rounded, size: 10, color: marketAccent),
+                        const SizedBox(width: 4),
+                        Expanded(child: Text(item['fullname'] ?? "Ẩn danh",
+                            style: const TextStyle(fontSize: 9, color: Colors.blueGrey, fontWeight: FontWeight.w600), maxLines: 1)),
+                      ],
+                    ),
+                  ],
+                ),
+              )
+            ],
+          ),
+        ),
       ),
+    );
+  }
+
+  Widget _buildFab() {
+    return FloatingActionButton(
+      backgroundColor: vkuBlue,
+      elevation: 8,
+      onPressed: () async {
+        bool? refresh = await Navigator.push(context, MaterialPageRoute(
+          builder: (context) => AddProductPage(userId: widget.userId),
+        ));
+        if (refresh == true) fetchProducts();
+      },
+      child: const Icon(Icons.add_photo_alternate_rounded, color: Colors.white),
     );
   }
 }

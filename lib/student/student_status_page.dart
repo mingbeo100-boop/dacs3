@@ -48,7 +48,7 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
       int monthNum = int.parse(filterMonth.replaceAll(RegExp(r'[^0-9]'), ''));
 
       final response = await http.get(Uri.parse(
-          "http://192.168.4.21/dacs3/get_student_status.php?user_id=${widget.user['id']}&month=$monthNum&year=$filterYear"
+          "http://10.60.56.48/dacs3/get_student_status.php?user_id=${widget.user['id']}&month=$monthNum&year=$filterYear"
       ));
 
       if (response.statusCode == 200) {

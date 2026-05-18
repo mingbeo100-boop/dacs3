@@ -1,12 +1,12 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 import 'dart:math' as math;
 import '../core/mqtt_service.dart';
 
 class VirtualDevicePage extends StatefulWidget {
-  final String roomId; // Bây giờ roomId chính là chuỗi tên phòng (VD: "2_302")
+  final String roomId;
   final String roomName;
   final dynamic user;
   const VirtualDevicePage({super.key, required this.roomId, required this.roomName, this.user});
@@ -28,12 +28,12 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
   static const acActive = Color(0xFF00E5FF);
   static const lockActive = Color(0xFFFF3D00);
 
+  // Trạng thái thiết bị
   bool isLightOn = false, isFanOn = false, isAcOn = false, isLockOpen = false;
   double temperature = 26.5, humidity = 60.0;
-  String lastMessage = "Đang đồng bộ phòng...";
+  String lastMessage = "Hệ thống sẵn sàng";
   String connectionStatus = "Đang kết nối...";
 
-  // Topic MQTT dựa trên tên phòng (VD: vku/nhatlong/room2302/all)
   String get roomTopic => "vku/nhatlong/room${widget.roomName.replaceAll('_', '')}/all";
 
   Timer? _powerCounter;
@@ -47,24 +47,28 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     _glowController = AnimationController(duration: const Duration(seconds: 1), vsync: this)..repeat(reverse: true);
     _effectController = AnimationController(duration: const Duration(seconds: 4), vsync: this)..repeat();
 
-    _syncDevicesFromDB();
-    _setupMqtt();
+    // Chạy song song cả 2 luồng để nhanh nhất
+    Future.wait([
+      _syncDevicesFromDB(),
+      _setupMqtt(),
+    ]);
   }
 
-  // --- LOGIC ĐỒNG BỘ THEO TÊN PHÒNG ---
+  // --- ĐỒNG BỘ DỮ LIỆU TỪ DB (CHẠY 1 LẦN KHI VÀO) ---
   Future<void> _syncDevicesFromDB() async {
     try {
-      // Gọi API lấy thiết bị dựa theo tên phòng (widget.roomId bây giờ là "2_302")
-      final response = await http.get(Uri.parse("http://192.168.4.21/dacs3/get_devices.php?room_id=${widget.roomId}"));
+      final response = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_devices.php?room_id=${widget.roomId}"))
+          .timeout(const Duration(seconds: 3));
+
       if (response.statusCode == 200) {
         List<dynamic> deviceList = jsonDecode(response.body);
+        if (!mounted) return;
         setState(() {
           for (var d in deviceList) {
             String s = d['status'].toString().toLowerCase();
             bool isOn = (s == "1" || s == "on" || s == "true");
             String type = d['device_type'].toString().toLowerCase();
 
-            // Khớp trạng thái theo loại thiết bị
             if (type == 'light') isLightOn = isOn;
             if (type == 'fan') {
               isFanOn = isOn;
@@ -73,61 +77,74 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
             if (type == 'ac') isAcOn = isOn;
             if (type == 'lock') isLockOpen = isOn;
           }
-          lastMessage = "Phòng ${widget.roomName} sẵn sàng.";
           _managePowerTimer();
         });
       }
-    } catch (e) { debugPrint("Lỗi sync: $e"); }
+    } catch (e) { debugPrint("Lỗi sync DB: $e"); }
   }
 
-  void _setupMqtt() async {
-    String clientId = "NhatLong_${widget.roomName}_${DateTime.now().millisecondsSinceEpoch}";
-    await _mqtt.connect(clientId, (message) {
-      if (!mounted) return;
-      setState(() {
-        lastMessage = message;
-        if (message == "LIGHT_ON") isLightOn = true;
-        if (message == "LIGHT_OFF") isLightOn = false;
-        if (message == "FAN_ON") { isFanOn = true; _fanController.repeat(); }
-        if (message == "FAN_OFF") { isFanOn = false; _fanController.stop(); }
-        if (message == "AC_ON") isAcOn = true;
-        if (message == "AC_OFF") isAcOn = false;
-        if (message == "LOCK_OPEN") isLockOpen = true;
-        if (message == "LOCK_CLOSE") isLockOpen = false;
-        _managePowerTimer();
-      });
-    });
-    _mqtt.subscribe(roomTopic);
-    setState(() => connectionStatus = "Trực Tuyến");
-  }
-
-  // --- HÀM TOGGLE GỬI THEO LOẠI THIẾT BỊ ---
-  Future<void> _handleToggle(String deviceType, String cmd, bool currentOn) async {
-    String action = currentOn ? "off" : "on";
-    String mqttCmd = (cmd == "LOCK") ? (currentOn ? "LOCK_CLOSE" : "LOCK_OPEN") : "${cmd}_${action.toUpperCase()}";
-
-    // 1. Gửi lệnh qua MQTT
-    _mqtt.publish(roomTopic, mqttCmd);
-
-    // 2. Cập nhật vào DB (Gửi room_id và device_type để PHP tìm đúng thiết bị)
+  // --- KẾT NỐI MQTT SIÊU TỐC ---
+  Future<void> _setupMqtt() async {
+    String clientId = "NL_${widget.roomName}_${math.Random().nextInt(1000)}";
     try {
-      await http.post(
-          Uri.parse("http://192.168.4.21/dacs3/toggle_and_save_power.php"),
-          body: {
-            "room_id": widget.roomName, // VD: "2_302"
-            "device_type": deviceType,  // VD: "light"
-            "status": action
-          }
-      );
-    } catch (e) { debugPrint("Lỗi cập nhật DB: $e"); }
+      await _mqtt.connect(clientId, (message) {
+        if (!mounted) return;
+        _processIncomingMqtt(message);
+      });
+      _mqtt.subscribe(roomTopic);
+      if (mounted) setState(() => connectionStatus = "Trực Tuyến");
+    } catch (e) {
+      if (mounted) setState(() => connectionStatus = "Ngoại Tuyến");
+    }
+  }
 
+  void _processIncomingMqtt(String message) {
     setState(() {
-      if (cmd == "LIGHT") isLightOn = !isLightOn;
-      if (cmd == "FAN") { isFanOn = !isFanOn; isFanOn ? _fanController.repeat() : _fanController.stop(); }
-      if (cmd == "AC") isAcOn = !isAcOn;
-      if (cmd == "LOCK") isLockOpen = !isLockOpen;
+      lastMessage = "Nhận: $message";
+      if (message == "LIGHT_ON") isLightOn = true;
+      else if (message == "LIGHT_OFF") isLightOn = false;
+      else if (message == "FAN_ON") { isFanOn = true; _fanController.repeat(); }
+      else if (message == "FAN_OFF") { isFanOn = false; _fanController.stop(); }
+      else if (message == "AC_ON") isAcOn = true;
+      else if (message == "AC_OFF") isAcOn = false;
+      else if (message == "LOCK_OPEN") isLockOpen = true;
+      else if (message == "LOCK_CLOSE") isLockOpen = false;
       _managePowerTimer();
     });
+  }
+
+  // --- HÀM TOGGLE CẢI TIẾN: PHẢN HỒI TỨC THÌ ---
+  void _handleToggle(String deviceType, String cmd, bool currentStatus) {
+    // 1. Optimistic UI: Đổi trạng thái ngay trên màn hình (0ms)
+    setState(() {
+      if (cmd == "LIGHT") isLightOn = !currentStatus;
+      if (cmd == "FAN") {
+        isFanOn = !currentStatus;
+        isFanOn ? _fanController.repeat() : _fanController.stop();
+      }
+      if (cmd == "AC") isAcOn = !currentStatus;
+      if (cmd == "LOCK") isLockOpen = !currentStatus;
+      lastMessage = "Đang gửi lệnh $cmd...";
+    });
+
+    // 2. Xử lý lệnh MQTT và DB ngầm (Background)
+    String action = currentStatus ? "OFF" : "ON";
+    String mqttCmd = (cmd == "LOCK") ? (currentStatus ? "LOCK_CLOSE" : "LOCK_OPEN") : "${cmd}_$action";
+
+    // Gửi MQTT ngay
+    _mqtt.publish(roomTopic, mqttCmd);
+
+    // Gửi DB (Không dùng await để không chặn UI)
+    http.post(
+        Uri.parse("http://10.60.56.48/dacs3/toggle_and_save_power.php"),
+        body: {
+          "room_id": widget.roomName,
+          "device_type": deviceType,
+          "status": currentStatus ? "off" : "on"
+        }
+    ).catchError((e) => debugPrint("Lỗi lưu DB: $e"));
+
+    _managePowerTimer();
   }
 
   void _managePowerTimer() {
@@ -135,15 +152,30 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     if (anyOn) {
       if (_powerCounter == null || !_powerCounter!.isActive) {
         _powerCounter = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (mounted) setState(() => _sessionKwh += ((isLightOn ? 20 : 0) + (isFanOn ? 65 : 0) + (isAcOn ? 1200 : 0)) / 3600 / 1000);
+          if (mounted) {
+            setState(() {
+              double consumption = 0;
+              if (isLightOn) consumption += 20;
+              if (isFanOn) consumption += 65;
+              if (isAcOn) consumption += 1200;
+              _sessionKwh += consumption / 3600 / 1000;
+            });
+          }
         });
       }
     } else { _powerCounter?.cancel(); _powerCounter = null; }
   }
 
   @override
-  void dispose() { _fanController.dispose(); _glowController.dispose(); _effectController.dispose(); _powerCounter?.cancel(); super.dispose(); }
+  void dispose() {
+    _fanController.dispose();
+    _glowController.dispose();
+    _effectController.dispose();
+    _powerCounter?.cancel();
+    super.dispose();
+  }
 
+  // --- GIAO DIỆN (GIỮ NGUYÊN STYLE VKU CỦA ÔNG) ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -155,7 +187,6 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
           SliverToBoxAdapter(child: _buildConnectionStatusChip()),
           SliverToBoxAdapter(child: _buildDashboardBanner()),
           SliverToBoxAdapter(child: _buildSectionHeader("ĐIỀU KHIỂN THIẾT BỊ")),
-
           SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: 25),
             sliver: SliverGrid.count(
@@ -168,7 +199,6 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
               ],
             ),
           ),
-
           SliverToBoxAdapter(child: _buildSectionHeader("NHẬT KÝ HỆ THỐNG")),
           SliverToBoxAdapter(child: _buildMonitorBox()),
           const SliverToBoxAdapter(child: SizedBox(height: 50)),
@@ -229,10 +259,10 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text("TIÊU THỤ TRONG PHÒNG", style: TextStyle(color: Colors.white60, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
               const SizedBox(height: 5),
-              Text(_sessionKwh.toStringAsFixed(5), style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.w900)),
+              Text(_sessionKwh.toStringAsFixed(5), style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900)),
               const Text("kWh (Live)", style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
             ]),
-            Container(padding: const EdgeInsets.all(15), decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), shape: BoxShape.circle), child: const Icon(Icons.bolt_rounded, color: vkuOrange, size: 40)),
+            Container(padding: const EdgeInsets.all(15), decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), shape: BoxShape.circle), child: const Icon(Icons.bolt_rounded, color: vkuOrange, size: 35)),
           ]),
           const SizedBox(height: 25),
           Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
@@ -262,29 +292,27 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
   );
 
   Widget _buildDeviceCard(String name, IconData icon, bool isOn, Color activeColor, String cmd, String deviceType) {
-    return GestureDetector(
+    return InkWell(
       onTap: () => _handleToggle(deviceType, cmd, isOn),
+      borderRadius: BorderRadius.circular(35),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
+        duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
           color: isOn ? Colors.white : cardBg,
           borderRadius: BorderRadius.circular(35),
-          border: Border.all(color: isOn ? activeColor : Colors.white, width: 2.5),
+          border: Border.all(color: isOn ? activeColor : Colors.white, width: 2),
           boxShadow: [
-            if (isOn) BoxShadow(color: activeColor.withOpacity(0.2), blurRadius: 20, offset: const Offset(0, 10)),
-            BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 4)),
+            if (isOn) BoxShadow(color: activeColor.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 8)),
           ],
         ),
         child: Stack(children: [
           Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             _buildAnimatedIcon(name, icon, isOn, activeColor),
-            const SizedBox(height: 12),
-            Text(name, style: TextStyle(fontWeight: FontWeight.w900, color: isOn ? vkuBlue : Colors.grey.shade400, fontSize: 14)),
-            const SizedBox(height: 4),
-            Text(isOn ? "ON" : "OFF", style: TextStyle(color: isOn ? activeColor : Colors.grey.shade300, fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1)),
+            const SizedBox(height: 10),
+            Text(name, style: TextStyle(fontWeight: FontWeight.w900, color: isOn ? vkuBlue : Colors.grey.shade400, fontSize: 13)),
+            const SizedBox(height: 2),
+            Text(isOn ? "ON" : "OFF", style: TextStyle(color: isOn ? activeColor : Colors.grey.shade300, fontSize: 8, fontWeight: FontWeight.w900)),
           ])),
-          if (isOn && (name == "Điều hòa" || name == "Quạt máy"))
-            Positioned.fill(child: IgnorePointer(child: AnimatedBuilder(animation: _effectController, builder: (context, child) => CustomPaint(painter: ParticlePainter(name, _effectController.value, activeColor))))),
         ]),
       ),
     );
@@ -292,38 +320,16 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
 
   Widget _buildAnimatedIcon(String name, IconData icon, bool isOn, Color color) {
     if (isOn) {
-      return AnimatedBuilder(
-        animation: _glowController,
-        builder: (context, child) {
-          Widget iconWidget = Icon(icon, size: 45, color: color, shadows: [Shadow(color: color.withOpacity(0.6 * _glowController.value), blurRadius: 25)]);
-          if (name == "Quạt máy") return RotationTransition(turns: _fanController, child: iconWidget);
-          return iconWidget;
-        },
-      );
+      Widget iconWidget = Icon(icon, size: 40, color: color);
+      if (name == "Quạt máy") return RotationTransition(turns: _fanController, child: iconWidget);
+      return iconWidget;
     }
-    return Icon(icon, size: 40, color: Colors.grey.shade200);
+    return Icon(icon, size: 38, color: Colors.grey.shade200);
   }
 
   Widget _buildMonitorBox() => Container(
-    margin: const EdgeInsets.symmetric(horizontal: 25), padding: const EdgeInsets.all(22),
-    decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(30), border: Border.all(color: Colors.white12)),
-    child: Text(">_ $lastMessage", style: const TextStyle(color: Colors.white70, fontFamily: 'monospace', fontSize: 11, height: 1.5)),
+    margin: const EdgeInsets.symmetric(horizontal: 25), padding: const EdgeInsets.all(20),
+    decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(25)),
+    child: Text(">_ $lastMessage", style: const TextStyle(color: Colors.greenAccent, fontFamily: 'monospace', fontSize: 10)),
   );
-}
-
-// ParticlePainter GIỮ NGUYÊN NHƯ CỦA ÔNG...
-class ParticlePainter extends CustomPainter {
-  final String type; final double progress; final Color baseColor;
-  ParticlePainter(this.type, this.progress, this.baseColor);
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = baseColor.withOpacity(0.4);
-    final random = math.Random(123);
-    for (int i = 0; i < 20; i++) {
-      double x = random.nextDouble() * size.width;
-      double y = ((random.nextDouble() + progress) % 1.0) * size.height;
-      canvas.drawCircle(Offset(x, y), random.nextDouble() * 2 + 1, paint);
-    }
-  }
-  @override bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }

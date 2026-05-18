@@ -26,7 +26,7 @@ class _NotificationPageState extends State<NotificationPage> {
 
   Future<void> _fetchNotifications() async {
     try {
-      final res = await http.get(Uri.parse("http://192.168.4.21/dacs3/manage_notifications.php?user_id=${widget.userId}"));
+      final res = await http.get(Uri.parse("http://10.60.56.48/dacs3/manage_notifications.php?user_id=${widget.userId}"));
       if (res.statusCode == 200) {
         setState(() {
           notifications = jsonDecode(res.body)['data'];

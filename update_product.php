@@ -5,7 +5,7 @@ header("Access-Control-Allow-Origin: *");
 
 $method = $_SERVER['REQUEST_METHOD'];
 // Cấu hình giống với file manage_tickets để đồng bộ hệ thống
-$server_base = "http://192.168.4.21/dacs3/";
+$server_base = "http://10.60.56.48/dacs3/";
 $upload_path = "uploads/marketplace/"; 
 
 if ($method == 'POST') {
