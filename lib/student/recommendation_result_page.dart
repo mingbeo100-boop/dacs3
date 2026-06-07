@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để quét bảng kết quả gợi ý
 
 class RecommendationResultPage extends StatefulWidget {
-  final dynamic user;
+  final dynamic user; // Nhận toàn bộ thông tin tài khoản đang đăng nhập từ HomePage sang
   const RecommendationResultPage({super.key, required this.user});
 
   @override
@@ -23,45 +22,59 @@ class _RecommendationResultPageState extends State<RecommendationResultPage> {
   @override
   void initState() {
     super.initState();
-    _fetchRecommendations();
+    _fetchRecommendationsFromCloud();
   }
 
-  // --- LẤY DỮ LIỆU TỪ BACKEND ---
-  Future<void> _fetchRecommendations() async {
+  // --- LOGIC MỚI: QUÉT TRỰC TIẾP KẾT QUẢ GỢI Ý TỪ CLOUD FIRESTORE ---
+  Future<void> _fetchRecommendationsFromCloud() async {
+    if (!mounted) return;
     setState(() => isLoading = true);
+
     try {
-      final response = await http.get(Uri.parse(
-          "http://10.60.56.48/dacs3/get_recommendations.php?user_id=${widget.user['id']}"
-      ));
-      if (response.statusCode == 200) {
+      // Bốc mã sinh viên (username) của tài khoản đang đăng nhập để làm điều kiện lọc
+      String currentMssv = widget.user['username'].toString().trim();
+
+      // Truy vấn vào collection 'recommendations' tìm các bản ghi so khớp dành cho sinh viên này
+      // Xếp những người có độ tương đồng (match_score) cao nhất lên đầu
+      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+          .collection('recommendations')
+          .where('user_host', isEqualTo: currentMssv)
+          .orderBy('match_score', descending: true)
+          .get()
+          .timeout(const Duration(seconds: 4));
+
+      if (mounted) {
         setState(() {
-          recommendations = jsonDecode(response.body);
+          recommendations = querySnapshot.docs.map((doc) {
+            Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+            data['id'] = doc.id;
+            return data;
+          }).toList();
           isLoading = false;
         });
       }
     } catch (e) {
-      debugPrint("Lỗi gợi ý: $e");
-      setState(() => isLoading = false);
+      debugPrint("Lỗi bốc dữ liệu AI gợi ý từ Firestore: $e");
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
-  // --- HÀM HIỂN THỊ BẢNG THÔNG TIN NHỎ (DIALOG) - ĐÃ CẬP NHẬT GIAO DIỆN ---
+  // --- HÀM HIỂN THỊ BẢNG THÔNG TIN NHỎ (DIALOG) GIỮ NGUYÊN ---
   void _showStudentDetail(dynamic data) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: cardBg,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-        contentPadding: EdgeInsets.zero, // Làm sạch Padding mặc định
+        contentPadding: EdgeInsets.zero,
         content: Column(
-          mainAxisSize: MainAxisSize.min, // Bo gọn theo nội dung
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // 1. HEADER DIALOG MỚI: CHỮ NẰM TRÊN NỀN XANH
             Container(
               padding: const EdgeInsets.symmetric(vertical: 20),
               decoration: const BoxDecoration(
-                color: vkuBlue, // Nền xanh VKU
-                borderRadius: BorderRadius.vertical(top: Radius.circular(30)), // Bo góc trên
+                color: vkuBlue,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
               ),
               width: double.infinity,
               child: const Column(
@@ -71,7 +84,7 @@ class _RecommendationResultPageState extends State<RecommendationResultPage> {
                   Text(
                     "THÔNG TIN SINH VIÊN",
                     style: TextStyle(
-                      color: Colors.white, // Chữ trắng nổi bật
+                      color: Colors.white,
                       fontWeight: FontWeight.w900,
                       fontSize: 14,
                       letterSpacing: 1.5,
@@ -80,26 +93,16 @@ class _RecommendationResultPageState extends State<RecommendationResultPage> {
                 ],
               ),
             ),
-
-            // 2. PHẦN NỘI DUNG THÔNG TIN
             Padding(
               padding: const EdgeInsets.all(25.0),
               child: Column(
                 children: [
-                  // Dòng 1: Họ tên
                   _buildDetailRow(Icons.badge_outlined, "Họ tên:", data['fullname'] ?? "N/A"),
-                  const Divider(height: 30, thickness: 1), // Vạch phân chia gọn gàng
-
-                  // Dòng 2: PHÒNG HIỆN TẠI (Nhớ sửa PHP để lấy được cái này nhé Long)
+                  const Divider(height: 30, thickness: 1),
                   _buildDetailRow(Icons.meeting_room_outlined, "Phòng ở:", data['room_id'] ?? "Chưa rõ"),
                   const Divider(height: 30, thickness: 1),
-
-                  // Dòng 3: Độ tương đồng
                   _buildDetailRow(Icons.favorite_outline_rounded, "Tương đồng:", "${data['match_score']}%"),
-
                   const SizedBox(height: 30),
-
-                  // Nút XÁC NHẬN bo góc
                   SizedBox(
                     width: double.infinity,
                     height: 50,
@@ -123,7 +126,6 @@ class _RecommendationResultPageState extends State<RecommendationResultPage> {
     );
   }
 
-  // Widget phụ để tạo dòng thông tin gọn gàng
   Widget _buildDetailRow(IconData icon, String label, String value) {
     return Row(
       children: [
@@ -214,7 +216,7 @@ class _RecommendationResultPageState extends State<RecommendationResultPage> {
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 15, offset: const Offset(0, 8))],
       ),
       child: InkWell(
-        onTap: () => _showStudentDetail(data), // NHẤN ĐỂ HIỆN BẢNG THÔNG TIN MỚI
+        onTap: () => _showStudentDetail(data),
         borderRadius: BorderRadius.circular(25),
         child: Padding(
           padding: const EdgeInsets.all(18),

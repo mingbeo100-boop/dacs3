@@ -1,63 +1,99 @@
-<?php
-include_once 'db_config.php';
-header('Content-Type: application/json; charset=utf-8');
-date_default_timezone_set('Asia/Ho_Chi_Minh');
+// --- HÀM TỰ ĐỘNG CHỐT SỐ ĐIỆN VÀ KHỞI TẠO HOÁ ĐƠN MÂY (THAY THẾ FILE PHP) ---
+Future<void> cronMonthlyPowerSave(BuildContext context, VoidCallback onRefreshCallback) async {
+  final int currentMonth = DateTime.now().month;
+  final int currentYear = DateTime.now().year;
+  const double pricePerKwh = 3500.0; // Đơn giá điện chuẩn 3.500 VNĐ/kWh của VKU
 
-// Thiết lập thông số chốt
-$month = date('m');      // Tháng hiện tại (Ví dụ: 04)
-$year = date('Y');       // Năm hiện tại (2026)
-$price_per_kwh = 3500;   // Đơn giá điện (3.500 VNĐ/kWh)
-
-try {
-    // 1. Lấy danh sách tổng điện năng tiêu thụ của từng phòng từ bảng devices
-    // Giả sử bảng devices của ông có cột room_id và total_kwh
-    $sql_devices = "SELECT room_id, SUM(total_kwh) as consumption FROM devices GROUP BY room_id";
-    $stmt_devices = $conn->query($sql_devices);
-    $rooms = $stmt_devices->fetchAll(PDO::FETCH_ASSOC);
-
-    if (empty($rooms)) {
-        echo json_encode(["success" => false, "message" => "Không có dữ liệu thiết bị để chốt số."]);
-        exit;
+  try {
+    final firestore = FirebaseFirestore.instance;
+    
+    // Bước 1: Lấy toàn bộ danh sách thiết bị từ collection 'devices'
+    final deviceSnapshot = await firestore.collection('devices').get();
+    
+    if (deviceSnapshot.docs.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("❌ Không có dữ liệu thiết bị trên mây để chốt số!"), backgroundColor: Colors.redAccent),
+        );
+      }
+      return;
     }
 
-    $count = 0;
-    foreach ($rooms as $room) {
-        $room_id = $room['room_id'];
-        $consumption = (double)$room['consumption'];
-        $amount = round($consumption * $price_per_kwh); // Tính thành tiền
-
-        // 2. Kiểm tra xem hóa đơn phòng này trong tháng này đã tồn tại chưa
-        $sql_check = "SELECT id FROM invoices WHERE room_id = :room AND billing_month = :m AND billing_year = :y";
-        $stmt_check = $conn->prepare($sql_check);
-        $stmt_check->execute([
-            'room' => $room_id,
-            'm' => (int)$month,
-            'y' => (int)$year
-        ]);
-
-        if ($stmt_check->rowCount() == 0) {
-            // 3. Nếu chưa có -> Tiến hành tạo hóa đơn mới (status = 0: Chưa đóng)
-            $sql_ins = "INSERT INTO invoices (room_id, consumption, amount, billing_month, billing_year, status, created_at) 
-                        VALUES (:room, :cons, :amt, :m, :y, 0, NOW())";
-            $stmt_ins = $conn->prepare($sql_ins);
-            $stmt_ins->execute([
-                'room' => $room_id,
-                'cons' => $consumption,
-                'amt'  => $amount,
-                'm'    => (int)$month,
-                'y'    => (int)$year
-            ]);
-            $count++;
-        }
+    // Bước 2: Gom tổng lượng điện tiêu thụ (total_kwh) theo từng room_id trên RAM
+    final Map<String, double> roomConsumptionMap = {};
+    for (var doc in deviceSnapshot.docs) {
+      final data = doc.data();
+      final String roomId = data['room_id']?.toString() ?? "";
+      final double totalKwh = double.tryParse(data['total_kwh']?.toString() ?? '0') ?? 0.0;
+      
+      if (roomId.isNotEmpty) {
+        roomConsumptionMap[roomId] = (roomConsumptionMap[roomId] ?? 0.0) + totalKwh;
+      }
     }
 
-    echo json_encode([
-        "success" => true,
-        "message" => "Đã chốt số điện tháng $month/$year thành công cho $count phòng!",
-        "details" => "Đơn giá áp dụng: $price_per_kwh VNĐ/kWh"
-    ]);
+    // Bước 3: Quét kiểm tra trùng lặp và tiến hành tạo hóa đơn mới bằng WriteBatch
+    int createdInvoicesCount = 0;
+    WriteBatch batch = firestore.batch();
 
-} catch (PDOException $e) {
-    echo json_encode(["success" => false, "message" => "Lỗi hệ thống: " . $e->getMessage()]);
+    // Lấy danh sách hóa đơn hiện tại của tháng và năm đó để đối soát chống tạo trùng
+    final existingInvoicesSnapshot = await firestore
+        .collection('invoices')
+        .where('month', isEqualTo: currentMonth)
+        .where('year', isEqualTo: currentYear)
+        .get();
+
+    // Đưa các mã phòng đã có hóa đơn trong tháng vào Set để tra cứu nhanh 0ms
+    final Set<String> existingRooms = existingInvoicesSnapshot.docs
+        .map((doc) => doc.data()['room_id']?.toString() ?? "")
+        .toSet();
+
+    // Duyệt qua từng phòng để tính tiền và tạo hóa đơn
+    for (var entry in roomConsumptionMap.entries) {
+      final String roomId = entry.key;
+      final double consumption = entry.value;
+      final double amount = (consumption * pricePerKwh).roundToDouble(); // Tính thành tiền điện
+
+      // Nếu phòng này chưa được chốt hóa đơn trong tháng hiện tại -> Tiến hành băm document mới
+      if (!existingRooms.contains(roomId)) {
+        DocumentReference invoiceRef = firestore.collection('invoices').doc();
+        
+        batch.set(invoiceRef, {
+          'room_id': roomId,
+          'usage_kwh': consumption, // Số điện tiêu thụ
+          'amount': amount,          // Thành tiền điện (VNĐ)
+          'month': currentMonth,
+          'year': currentYear,
+          'status': 0,               // Mặc định: 0 - CHƯA ĐÓNG TIỀN
+          'receipt_image': '',       // Trống, chờ sinh viên tải biên lai lên
+          'created_at': DateTime.now().toString().substring(0, 19),
+        });
+        createdInvoicesCount++;
+      }
+    }
+
+    // Thực thi lệnh ghi đồng loạt lên mây Firebase
+    if (createdInvoicesCount > 0) {
+      await batch.commit();
+    }
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("⚡ Đã chốt số điện thành công cho $createdInvoicesCount phòng trong Tháng $currentMonth/$currentYear!"),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      // Gọi lại hàm làm mới dữ liệu để cập nhật biểu đồ và bộ tiến trình LinearProgressIndicator trên UI
+      onRefreshCallback();
+    }
+
+  } catch (e) {
+    debugPrint("Lỗi chốt số điện hệ thống mây: $e");
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ Lỗi hệ thống: ${e.toString()}"), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
 }
-?>

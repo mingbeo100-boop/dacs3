@@ -5,7 +5,7 @@ header("Access-Control-Allow-Origin: *");
 
 $method = $_SERVER['REQUEST_METHOD'];
 // Long nhớ kiểm tra IP máy tính (ipconfig) và sửa ở đây cho đúng
-$server_base = "http://10.60.56.48/dacs3/";
+$server_base = "http:// 172.16.0.226/dacs3/";
 $upload_path = "uploads/tickets/"; 
 
 if ($method == 'GET') {

@@ -1,33 +1,25 @@
-<?php
-header("Access-Control-Allow-Origin: *");
-header("Content-Type: application/json; charset=UTF-8");
-include_once 'db_config.php';
+// --- HÀM XÓA SẢN PHẨM TRỰC TIẾP TRÊN FIRESTORE (THAY THẾ FILE PHP) ---
+Future<void> deleteMarketplaceProduct(String docId, BuildContext context, VoidCallback onRefresh) async {
+  try {
+    // Gọi lệnh xóa document trực tiếp dựa trên ID của món đồ trên mây
+    await FirebaseFirestore.instance.collection('marketplace').doc(docId).delete();
 
-$product_id = $_POST['id'] ?? '';
-
-if(!empty($product_id)) {
-    try {
-        // Lấy tên ảnh trước khi xóa để dọn dẹp thư mục uploads
-        $query_img = "SELECT image_url FROM marketplace WHERE id = :id";
-        $stmt_img = $conn->prepare($query_img);
-        $stmt_img->execute([':id' => $product_id]);
-        $row = $stmt_img->fetch(PDO::FETCH_ASSOC);
-
-        // Thực hiện xóa trong DB
-        $query = "DELETE FROM marketplace WHERE id = :id";
-        $stmt = $conn->prepare($query);
-        
-        if($stmt->execute([':id' => $product_id])) {
-            // Nếu xóa DB xong, xóa luôn file ảnh vật lý trong thư mục uploads cho nhẹ máy
-            if(!empty($row['image_url'])) {
-                @unlink("uploads/" . $row['image_url']);
-            }
-            echo json_encode(["status" => "success", "message" => "Đã xóa sản phẩm!"]);
-        } else {
-            echo json_encode(["status" => "error", "message" => "Không thể xóa"]);
-        }
-    } catch (PDOException $e) {
-        echo json_encode(["status" => "error", "message" => $e->getMessage()]);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("✅ Đã xóa sản phẩm thành công khỏi hệ thống mây!"),
+          backgroundColor: Color(0xFF072C6C),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      onRefresh(); // Gọi lại hàm tải danh sách chợ để cập nhật lại UI 120 FPS
     }
+  } catch (e) {
+    debugPrint("Lỗi xóa sản phẩm mây: $e");
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ Không thể xóa: ${e.toString()}"), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
 }
-?>

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để giám sát thiết bị Realtime
 
 class AdminDeviceSummaryPage extends StatefulWidget {
   const AdminDeviceSummaryPage({super.key});
@@ -15,39 +14,7 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
   static const vkuOrange = Color(0xFFFF8C00);
   static const sandBg = Color(0xFFF5E1C5);
 
-  List<dynamic> roomStats = [];
-  bool isLoading = true;
-
-  // Địa chỉ IP Server của ông
-  final String apiUrl = "http://10.60.56.48/dacs3/get_device_stats_by_room.php";
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchRoomStats();
-  }
-
-  Future<void> _fetchRoomStats() async {
-    try {
-      final res = await http.get(Uri.parse(apiUrl));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        if (data['status'] == 'success') {
-          setState(() {
-            roomStats = data['data'];
-            isLoading = false;
-          });
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => isLoading = false);
-        debugPrint("Lỗi kết nối: $e");
-      }
-    }
-  }
-
-  // LOGIC PHÂN LOẠI ICON & MÀU (Giống ảnh mẫu ông gửi)
+  // LOGIC PHÂN LOẠI ICON & MÀU (Giữ nguyên cấu trúc phong cách của bạn)
   Map<String, dynamic> _getDeviceStyle(String name, bool isOn) {
     String n = name.toLowerCase();
     if (n.contains('đèn') || n.contains('light')) {
@@ -59,17 +26,23 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
     } else if (n.contains('khóa') || n.contains('lock')) {
       return {
         'icon': isOn ? Icons.lock_open_rounded : Icons.lock_rounded,
-        'color': Color(0xFFFF5722) // Màu đỏ cam của khóa
+        'color': const Color(0xFFFF5722)
       };
     }
     return {'icon': Icons.power_settings_new_rounded, 'color': Colors.blueGrey};
   }
 
   // Widget hiển thị từng thiết bị bên trong phòng
-  Widget _buildDeviceItem(String name, int status) {
-    bool isOn = status == 1;
+  Widget _buildDeviceItem(String name, bool isOn) {
     var style = _getDeviceStyle(name, isOn);
     Color deviceColor = isOn ? style['color'] : Colors.grey;
+
+    // Chuẩn hóa tên hiển thị tiếng Việt cho Admin dễ nhìn
+    String displayName = name;
+    if (name.toLowerCase() == 'light') displayName = "Bóng đèn";
+    if (name.toLowerCase() == 'fan') displayName = "Quạt máy";
+    if (name.toLowerCase() == 'ac') displayName = "Điều hòa";
+    if (name.toLowerCase() == 'lock') displayName = "Khóa cửa";
 
     return Container(
       margin: const EdgeInsets.only(top: 10),
@@ -84,7 +57,6 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
       ),
       child: Row(
         children: [
-          // Icon rực rỡ theo loại thiết bị
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
@@ -99,7 +71,7 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  name,
+                  displayName,
                   style: TextStyle(
                     color: isOn ? vkuBlue : Colors.grey.shade600,
                     fontWeight: isOn ? FontWeight.w900 : FontWeight.bold,
@@ -119,7 +91,6 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
               ],
             ),
           ),
-          // Badge ON/OFF
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
@@ -142,6 +113,11 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
 
   @override
   Widget build(BuildContext context) {
+    // THIẾT LẬP LUỒNG STREAM REALTIME LẮNG NGHE TOÀN BỘ THIẾT BỊ TRONG HỆ THỐNG
+    final Stream<QuerySnapshot> _devicesStream = FirebaseFirestore.instance
+        .collection('devices')
+        .snapshots();
+
     return Scaffold(
       backgroundColor: sandBg,
       appBar: AppBar(
@@ -160,77 +136,119 @@ class _AdminDeviceSummaryPageState extends State<AdminDeviceSummaryPage> {
         iconTheme: const IconThemeData(color: Colors.white),
         elevation: 0,
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator(color: vkuOrange))
-          : RefreshIndicator(
-        onRefresh: _fetchRoomStats,
-        color: vkuOrange,
-        child: ListView.builder(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
-          itemCount: roomStats.length,
-          itemBuilder: (context, index) {
-            final room = roomStats[index];
-            int active = room['active_count'];
-            int total = room['device_count'];
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _devicesStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const Center(child: Text("Lỗi tải dữ liệu thiết bị mây."));
+          }
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator(color: vkuOrange));
+          }
 
-            return Container(
-              margin: const EdgeInsets.only(bottom: 18),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(28),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
-                    blurRadius: 15,
-                    offset: const Offset(0, 8),
-                  )
-                ],
-              ),
-              child: Theme(
-                data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                child: ExpansionTile(
-                  tilePadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                  leading: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: vkuOrange.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.meeting_room_rounded, color: vkuOrange, size: 28),
-                  ),
-                  title: Text(
-                    "Phòng: ${room['room_id']}",
-                    style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 17),
-                  ),
-                  subtitle: Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      "Đang bật $active/$total thiết bị",
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: active > 0 ? Colors.green.shade700 : Colors.grey,
-                          fontWeight: FontWeight.w900
-                      ),
-                    ),
-                  ),
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 5, 20, 25),
-                      child: Column(
-                        children: (room['all_devices'] as List).map((device) {
-                          return _buildDeviceItem(
-                              device['device_name'],
-                              int.parse(device['status'].toString())
-                          );
-                        }).toList(),
-                      ),
-                    ),
+          // --- THUẬT TOÁN GOM NHÓM THEO PHÒNG (GROUP BY ROOM_ID) TRỰC TIẾP TỪ FIRESTORE ---
+          Map<String, List<Map<String, dynamic>>> groupedRooms = {};
+
+          for (var doc in snapshot.data!.docs) {
+            Map<String, dynamic> deviceData = doc.data() as Map<String, dynamic>;
+            String roomId = deviceData['room_id']?.toString() ?? "Chưa rõ";
+
+            // Xác định trạng thái ON/OFF chuỗi hoặc bool linh hoạt
+            String s = deviceData['status'].toString().toLowerCase();
+            bool isOn = (s == "1" || s == "on" || s == "true");
+
+            Map<String, dynamic> cleanDevice = {
+              'name': deviceData['device_type']?.toString() ?? 'Thiết bị',
+              'is_on': isOn
+            };
+
+            if (!groupedRooms.containsKey(roomId)) {
+              groupedRooms[roomId] = [];
+            }
+            groupedRooms[roomId]!.add(cleanDevice);
+          }
+
+          // Chuyển Map gom nhóm sang dạng List để đẩy vào ListView.builder hiển thị giao diện
+          List<String> sortedRoomIds = groupedRooms.keys.toList()..sort();
+
+          if (sortedRoomIds.isEmpty) {
+            return const Center(
+              child: Text("Hệ thống IoT hiện tại chưa cấu hình thiết bị nào.",
+                  style: TextStyle(color: vkuBlue, fontWeight: FontWeight.bold, fontSize: 13)),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
+            physics: const BouncingScrollPhysics(),
+            itemCount: sortedRoomIds.length,
+            itemBuilder: (context, index) {
+              final String roomId = sortedRoomIds[index];
+              final List<Map<String, dynamic>> allDevices = groupedRooms[roomId]!;
+
+              // Tính toán nhanh số lượng thiết bị đang bật trong phòng để render subtitle badge
+              int activeCount = allDevices.where((d) => d['is_on'] == true).length;
+              int totalCount = allDevices.length;
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 18),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(28),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.04),
+                      blurRadius: 15,
+                      offset: const Offset(0, 8),
+                    )
                   ],
                 ),
+                child: Theme(
+                    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                        tilePadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                        leading: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: vkuOrange.withOpacity(0.1),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.meeting_room_rounded, color: vkuOrange, size: 28),
+                        ),
+                        title: Text(
+                          "Phòng: $roomId",
+                          style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 17),
+                        ),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            "Đang bật $activeCount/$totalCount thiết bị",
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: activeCount > 0 ? Colors.green.shade700 : Colors.grey,
+                                fontWeight: FontWeight.w900
+                            ),
+                          ),
+                        ),
+                        children: [
+                    Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 5, 20, 25),
+                    child: Column(
+                        children:allDevices.map((device) {
+                return _buildDeviceItem(
+                device['name'],
+                device['is_on']
+                );
+                }).toList(),
               ),
-            );
-          },
-        ),
+              ),
+              ],
+              ),
+              ),
+              );
+            },
+          );
+        },
       ),
     );
   }

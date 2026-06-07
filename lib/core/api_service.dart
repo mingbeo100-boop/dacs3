@@ -1,27 +1,26 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ApiService {
+  // Class này bây giờ đóng vai trò là một Helper tập trung để bốc nhanh dữ liệu Firestore khi cần.
+  // Bạn không còn cần biến 'baseUrl' hay các hàm http.post/get nữa.
 
-  static const String baseUrl = "http://10.0.2.2/dacs3";
-
-  static Future<Map<String, dynamic>> login(String username, String password) async {
+  /// Hàm phụ trợ: Lấy nhanh thông tin chi tiết của một sinh viên dựa vào Mã sinh viên (username)
+  static Future<Map<String, dynamic>?> getUserProfile(String username) async {
     try {
-      final response = await http.post(
-        Uri.parse("$baseUrl/login.php"),
-        body: {
-          'username': username,
-          'password': password,
-        },
-      );
+      DocumentSnapshot userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(username.trim().toUpperCase())
+          .get();
 
-      if (response.statusCode == 200) {
-        return json.decode(response.body);
-      } else {
-        return {"status": "error", "message": "Lỗi kết nối server"};
+      if (userDoc.exists) {
+        Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
+        data['id'] = userDoc.id; // Gán ID tài liệu làm định danh
+        return data;
       }
+      return null;
     } catch (e) {
-      return {"status": "error", "message": "Lỗi: $e"};
+      print("Lỗi helper ApiService khi lấy profile: $e");
+      return null;
     }
   }
 }

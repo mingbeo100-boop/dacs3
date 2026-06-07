@@ -1,57 +1,24 @@
-<?php
-include_once 'db_config.php'; 
-header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *");
+Future<void> manageTicketActionCloud({
+  required String ticketDocId,
+  required String action, // 'resolved', 'processing' hoặc 'delete'
+  required BuildContext context,
+  required VoidCallback onRefresh,
+}) async {
+  try {
+    final docRef = FirebaseFirestore.instance.collection('tickets').doc(ticketDocId);
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $id = $_POST['id'] ?? null;
-    $action = $_POST['action'] ?? null;
-
-    if (!$id || !$action) {
-        echo json_encode(["status" => "error", "message" => "Thiếu ID hoặc hành động"]);
-        exit;
+    if (action == 'delete') {
+      await docRef.delete(); // Lệnh xoá sổ tài liệu khỏi mây Firestore
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("🗑️ Đã xoá phiếu báo hỏng thành công!")));
+    } else {
+      await docRef.update({
+        'status': action, // Cập nhật trạng thái mới (Ví dụ: Đã sửa xong)
+        'updated_at': DateTime.now().toString().substring(0, 19),
+      });
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("✅ Đã cập nhật trạng thái phiếu!"), backgroundColor: Colors.green));
     }
-
-    try {
-        if ($action == 'delete') {
-            // Bước 1: Lấy link ảnh
-            $stmtImg = $conn->prepare("SELECT image_url FROM tickets WHERE id = ?");
-            $stmtImg->execute([$id]);
-            $ticket = $stmtImg->fetch(PDO::FETCH_ASSOC);
-
-            if ($ticket && !empty($ticket['image_url'])) {
-                $fileName = basename($ticket['image_url']); 
-                $filePath = "uploads/tickets/" . $fileName;
-
-                // Bước 2: Xóa file vật lý
-                if (file_exists($filePath)) {
-                    unlink($filePath);
-                }
-            }
-
-            // Bước 3: Xóa bản ghi
-            $stmt = $conn->prepare("DELETE FROM tickets WHERE id = ?");
-            $stmt->execute([$id]);
-            $message = "Xóa thành công";
-
-        } else {
-            // Cập nhật trạng thái
-            $stmt = $conn->prepare("UPDATE tickets SET status = ? WHERE id = ?");
-            $stmt->execute([$action, $id]);
-            $message = "Cập nhật thành công";
-        }
-        
-        // Trả về thêm ID để Flutter biết chính xác dòng nào vừa bị tác động
-        echo json_encode([
-            "status" => "success", 
-            "message" => $message,
-            "id" => $id,
-            "action" => $action
-        ]);
-        
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(["status" => "error", "message" => $e->getMessage()]);
-    }
+    onRefresh(); // Làm mới lại UI danh sách 120 FPS phản hồi siêu tốc
+  } catch (e) {
+    debugPrint("Lỗi thao tác phiếu sửa chữa: $e");
+  }
 }
-?>

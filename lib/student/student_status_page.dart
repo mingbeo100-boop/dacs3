@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để tra cứu dữ liệu
 
 class StudentStatusPage extends StatefulWidget {
-  final dynamic user;
+  final dynamic user; // Nhận toàn bộ hồ sơ tài khoản từ HomePage truyền sang
   const StudentStatusPage({super.key, required this.user});
 
   @override
@@ -25,6 +24,9 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
   final List<String> months = List.generate(12, (i) => "Tháng ${i + 1 < 10 ? '0' : ''}${i + 1}");
   final List<String> years = ["2024", "2025", "2026", "2027"];
 
+  // Bốc Mã sinh viên làm chìa khóa tra cứu chính
+  String get currentMssv => widget.user['username']?.toString() ?? "";
+
   @override
   void initState() {
     super.initState();
@@ -33,34 +35,48 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
     filterYear = now.year.toString();
     if (!years.contains(filterYear)) filterYear = "2026";
 
-    _loadMyStatus();
+    if (currentMssv.isNotEmpty) {
+      _loadMyStatusFromCloud();
+    }
   }
 
   bool _parseBool(dynamic value) {
     if (value == null) return false;
-    return value.toString() == "1" || value.toString().toLowerCase() == "true";
+    return value == true || value.toString() == "1" || value.toString().toLowerCase() == "true";
   }
 
-  Future<void> _loadMyStatus() async {
+  // --- LOGIC MỚI: TRA CỨU ĐỒNG BỘ TRỰC TIẾP TỪ COLLECTION ROOM_STATUSES CỦA ADMIN ---
+  Future<void> _loadMyStatusFromCloud() async {
     if (!mounted) return;
     setState(() => isLoading = true);
     try {
-      int monthNum = int.parse(filterMonth.replaceAll(RegExp(r'[^0-9]'), ''));
+      // Ghép chuỗi tạo Document ID chuẩn xác theo cấu trúc thiết lập bên phía Admin
+      String docId = "${currentMssv}_${filterMonth}_$filterYear";
 
-      final response = await http.get(Uri.parse(
-          "http://10.60.56.48/dacs3/get_student_status.php?user_id=${widget.user['id']}&month=$monthNum&year=$filterYear"
-      ));
+      DocumentSnapshot statusDoc = await FirebaseFirestore.instance
+          .collection('room_statuses')
+          .doc(docId)
+          .get();
 
-      if (response.statusCode == 200) {
-        if (mounted) {
-          setState(() {
-            statusData = jsonDecode(response.body);
-            isLoading = false;
-          });
-        }
+      if (mounted) {
+        setState(() {
+          if (statusDoc.exists) {
+            statusData = statusDoc.data() as Map<String, dynamic>;
+          } else {
+            // Nếu Admin chưa khởi tạo bảng dữ liệu tháng này, reset giao diện về mặc định trống
+            statusData = {
+              'is_paid': false,
+              'week1': false,
+              'week2': false,
+              'week3': false,
+              'week4': false,
+            };
+          }
+          isLoading = false;
+        });
       }
     } catch (e) {
-      debugPrint("Lỗi kết nối: $e");
+      debugPrint("Lỗi kết nối tra cứu nội trú Firestore: $e");
       if (mounted) setState(() => isLoading = false);
     }
   }
@@ -75,7 +91,10 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
         physics: const BouncingScrollPhysics(),
         slivers: [
           _buildSliverAppBar(),
-          SliverToBoxAdapter(child: _buildMainStatusBanner(isPaid)),
+
+          isLoading
+              ? const SliverToBoxAdapter(child: Center(child: Padding(padding: EdgeInsets.all(50), child: CircularProgressIndicator(color: vkuOrange))))
+              : SliverToBoxAdapter(child: _buildMainStatusBanner(isPaid)),
 
           // --- HỆ KHUYẾN NGHỊ & NHẮC NHỞ ĐÓNG PHÍ ---
           SliverToBoxAdapter(child: _buildSmartRecommendation(isPaid)),
@@ -88,12 +107,12 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
                 children: [
                   Expanded(child: _buildBigDropdown("Tháng", filterMonth, months, (v) {
                     setState(() => filterMonth = v!);
-                    _loadMyStatus();
+                    _loadMyStatusFromCloud();
                   })),
                   const SizedBox(width: 15),
                   Expanded(child: _buildBigDropdown("Năm", filterYear, years, (v) {
                     setState(() => filterYear = v!);
-                    _loadMyStatus();
+                    _loadMyStatusFromCloud();
                   })),
                 ],
               ),
@@ -123,13 +142,12 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
     );
   }
 
-  // --- WIDGET HỆ KHUYẾN NGHỊ THÔNG MINH ---
+  // --- WIDGET HỆ KHUYẾN NGHỊ THÔNG MINH GIỮ NGUYÊN ---
   Widget _buildSmartRecommendation(bool isPaid) {
     if (isLoading) return const SizedBox();
 
     List<Widget> recs = [];
 
-    // 1. Nhắc nhở đóng phí (Ưu tiên hàng đầu)
     if (!isPaid) {
       recs.add(_buildRecItem(
           Icons.priority_high_rounded,
@@ -139,7 +157,6 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
       ));
     }
 
-    // 2. Nhắc nhở chuyên cần
     int vangCount = 0;
     if (!_parseBool(statusData['week1'])) vangCount++;
     if (!_parseBool(statusData['week2'])) vangCount++;
@@ -147,32 +164,32 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
     if (!_parseBool(statusData['week4'])) vangCount++;
 
     if (vangCount >= 3) {
-    recs.add(_buildRecItem(
-    Icons.report_problem_rounded,
-    "CẢNH BÁO CHUYÊN CẦN",
-    "Bạn đã vắng mặt $vangCount buổi sinh hoạt. Nguy cơ bị kỷ luật rất cao, hãy chú ý hơn!",
-    vkuOrange
-    ));
+      recs.add(_buildRecItem(
+          Icons.report_problem_rounded,
+          "CẢNH BÁO CHUYÊN CẦN",
+          "Bạn đã vắng mặt $vangCount buổi sinh hoạt. Nguy cơ bị kỷ luật rất cao, hãy chú ý hơn!",
+          vkuOrange
+      ));
     } else if (vangCount == 0 && isPaid) {
-    recs.add(_buildRecItem(
-    Icons.stars_rounded,
-    "KHEN NGỢI",
-    "Tuyệt vời! Bạn đang thực hiện rất tốt các quy định về học phí và chuyên cần.",
-    Colors.green
-    ));
+      recs.add(_buildRecItem(
+          Icons.stars_rounded,
+          "KHEN NGỢI",
+          "Tuyệt vời! Bạn đang thực hiện rất tốt các quy định về học phí và chuyên cần.",
+          Colors.green
+      ));
     }
 
     if (recs.isEmpty) return const SizedBox();
 
     return Container(
-    margin: const EdgeInsets.fromLTRB(25, 20, 25, 5),
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-    color: Colors.white,
-    borderRadius: BorderRadius.circular(30),
-    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))],
-    ),
-    child: Column(children: recs),
+      margin: const EdgeInsets.fromLTRB(25, 20, 25, 5),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))],
+      ),
+      child: Column(children: recs),
     );
   }
 
@@ -198,8 +215,6 @@ class _StudentStatusPageState extends State<StudentStatusPage> {
       ),
     );
   }
-
-  // --- CÁC WIDGETS CƠ BẢN GIỮ NGUYÊN ---
 
   Widget _buildSliverAppBar() {
     return SliverAppBar(

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
 import 'dart:math' as math;
 import '../core/mqtt_service.dart';
@@ -37,6 +36,7 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
   String get roomTopic => "vku/nhatlong/room${widget.roomName.replaceAll('_', '')}/all";
 
   Timer? _powerCounter;
+  StreamSubscription<QuerySnapshot>? _deviceSubscription; // Cổng lắng nghe Realtime của Firestore
   double _sessionKwh = 0.0;
   late AnimationController _fanController, _glowController, _effectController;
 
@@ -47,43 +47,42 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     _glowController = AnimationController(duration: const Duration(seconds: 1), vsync: this)..repeat(reverse: true);
     _effectController = AnimationController(duration: const Duration(seconds: 4), vsync: this)..repeat();
 
-    // Chạy song song cả 2 luồng để nhanh nhất
-    Future.wait([
-      _syncDevicesFromDB(),
-      _setupMqtt(),
-    ]);
+    _listenDevicesRealtime(); // Kích hoạt bộ thu phát tín hiệu liên tục từ bảng Firestore
+    _setupMqtt();
   }
 
-  // --- ĐỒNG BỘ DỮ LIỆU TỪ DB (CHẠY 1 LẦN KHI VÀO) ---
-  Future<void> _syncDevicesFromDB() async {
-    try {
-      final response = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_devices.php?room_id=${widget.roomId}"))
-          .timeout(const Duration(seconds: 3));
+  // --- LOGIC MỚI: LẮNG NGHE BIẾN ĐỘNG TRẠNG THÁI THIẾT BỊ REALTIME TỪ BẢNG FIRESTORE ---
+  void _listenDevicesRealtime() {
+    _deviceSubscription = FirebaseFirestore.instance
+        .collection('devices')
+        .where('room_id', isEqualTo: widget.roomId.toString())
+        .snapshots() // Đổi thành .snapshots() để bắt sự kiện thay đổi ngay lập tức
+        .listen((querySnapshot) {
+      if (!mounted) return;
 
-      if (response.statusCode == 200) {
-        List<dynamic> deviceList = jsonDecode(response.body);
-        if (!mounted) return;
-        setState(() {
-          for (var d in deviceList) {
-            String s = d['status'].toString().toLowerCase();
-            bool isOn = (s == "1" || s == "on" || s == "true");
-            String type = d['device_type'].toString().toLowerCase();
+      setState(() {
+        for (var doc in querySnapshot.docs) {
+          Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+          String s = data['status'].toString().toLowerCase();
+          bool isOn = (s == "1" || s == "on" || s == "true");
+          String type = data['device_type'].toString().toLowerCase();
 
-            if (type == 'light') isLightOn = isOn;
-            if (type == 'fan') {
-              isFanOn = isOn;
-              isOn ? _fanController.repeat() : _fanController.stop();
-            }
-            if (type == 'ac') isAcOn = isOn;
-            if (type == 'lock') isLockOpen = isOn;
+          if (type == 'light') isLightOn = isOn;
+          if (type == 'fan') {
+            isFanOn = isOn;
+            isOn ? _fanController.repeat() : _fanController.stop();
           }
-          _managePowerTimer();
-        });
-      }
-    } catch (e) { debugPrint("Lỗi sync DB: $e"); }
+          if (type == 'ac') isAcOn = isOn;
+          if (type == 'lock') isLockOpen = isOn;
+        }
+        _managePowerTimer();
+      });
+    }, onError: (e) {
+      debugPrint("Lỗi lắng nghe luồng Firestore IoT: $e");
+    });
   }
 
-  // --- KẾT NỐI MQTT SIÊU TỐC ---
+  // --- KẾT NỐI MQTT BROKER GIỮ NGUYÊN ---
   Future<void> _setupMqtt() async {
     String clientId = "NL_${widget.roomName}_${math.Random().nextInt(1000)}";
     try {
@@ -113,9 +112,9 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     });
   }
 
-  // --- HÀM TOGGLE CẢI TIẾN: PHẢN HỒI TỨC THÌ ---
-  void _handleToggle(String deviceType, String cmd, bool currentStatus) {
-    // 1. Optimistic UI: Đổi trạng thái ngay trên màn hình (0ms)
+  // --- HÀM TOGGLE ĐỒNG BỘ ĐÁM MÂY VÀ BẮN GÓI TIN MQTT ---
+  void _handleToggle(String deviceType, String cmd, bool currentStatus) async {
+    // 1. Optimistic UI: Phản hồi bật/tắt trên màn hình điện thoại trong 0 mili-giây
     setState(() {
       if (cmd == "LIGHT") isLightOn = !currentStatus;
       if (cmd == "FAN") {
@@ -127,22 +126,39 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
       lastMessage = "Đang gửi lệnh $cmd...";
     });
 
-    // 2. Xử lý lệnh MQTT và DB ngầm (Background)
+    // 2. Đồng bộ ngầm trạng thái lên mạng đám mây
     String action = currentStatus ? "OFF" : "ON";
     String mqttCmd = (cmd == "LOCK") ? (currentStatus ? "LOCK_CLOSE" : "LOCK_OPEN") : "${cmd}_$action";
 
-    // Gửi MQTT ngay
     _mqtt.publish(roomTopic, mqttCmd);
 
-    // Gửi DB (Không dùng await để không chặn UI)
-    http.post(
-        Uri.parse("http://10.60.56.48/dacs3/toggle_and_save_power.php"),
-        body: {
-          "room_id": widget.roomName,
+    try {
+      QuerySnapshot deviceQuery = await FirebaseFirestore.instance
+          .collection('devices')
+          .where('room_id', isEqualTo: widget.roomId.toString())
+          .where('device_type', isEqualTo: deviceType)
+          .limit(1)
+          .get();
+
+      if (deviceQuery.docs.isNotEmpty) {
+        // Cập nhật trạng thái chuỗi 'on' / 'off' tương thích với logic so khớp dòng 49
+        await FirebaseFirestore.instance
+            .collection('devices')
+            .doc(deviceQuery.docs.first.id)
+            .update({
+          "status": currentStatus ? "off" : "on"
+        });
+      } else {
+        // Tạo mới tài liệu thiết bị nếu phòng chưa được cấu hình dòng dữ liệu ban đầu
+        await FirebaseFirestore.instance.collection('devices').add({
+          "room_id": widget.roomId.toString(),
           "device_type": deviceType,
           "status": currentStatus ? "off" : "on"
-        }
-    ).catchError((e) => debugPrint("Lỗi lưu DB: $e"));
+        });
+      }
+    } catch (e) {
+      debugPrint("Lỗi cập nhật trạng thái thiết bị Firestore: $e");
+    }
 
     _managePowerTimer();
   }
@@ -168,6 +184,7 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
 
   @override
   void dispose() {
+    _deviceSubscription?.cancel(); // Huỷ cổng lắng nghe khi sinh viên thoát trang để tránh ngốn RAM
     _fanController.dispose();
     _glowController.dispose();
     _effectController.dispose();
@@ -175,7 +192,6 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     super.dispose();
   }
 
-  // --- GIAO DIỆN (GIỮ NGUYÊN STYLE VKU CỦA ÔNG) ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(

@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng Firestore lưu bản ghi
+import 'package:firebase_storage/firebase_storage.dart'; // Sử dụng Storage để lưu ảnh online
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 
 class AddProductPage extends StatefulWidget {
-  final String userId;
+  final String userId; // Nhận Mã sinh viên (username) từ trang trước truyền sang
   const AddProductPage({super.key, required this.userId});
 
   @override
@@ -14,11 +14,11 @@ class AddProductPage extends StatefulWidget {
 
 class _AddProductPageState extends State<AddProductPage> {
   // --- HỆ MÀU ĐỒNG BỘ VKU & SAND ---
-  static const vkuBlue = Color(0xFF072C6C);     // Xanh dương đậm VKU
-  static const vkuOrange = Color(0xFFFF8C00);   // Cam đặc trưng làm điểm nhấn
-  static const sandBg = Color(0xFFF5E1C5);      // Nền màu Cát đậm
-  static const cardBg = Color(0xFFFFF8F0);      // Màu kem nhạt cho ô nhập
-  static const darkText = Color(0xFF263238);    // Xám đen
+  static const vkuBlue = Color(0xFF072C6C);
+  static const vkuOrange = Color(0xFFFF8C00);
+  static const sandBg = Color(0xFFF5E1C5);
+  static const cardBg = Color(0xFFFFF8F0);
+  static const darkText = Color(0xFF263238);
 
   final _titleController = TextEditingController();
   final _priceController = TextEditingController();
@@ -27,6 +27,14 @@ class _AddProductPageState extends State<AddProductPage> {
 
   File? _image;
   final picker = ImagePicker();
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _priceController.dispose();
+    _descController.dispose();
+    super.dispose();
+  }
 
   Future<void> _pickImage() async {
     final pickedFile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
@@ -37,8 +45,13 @@ class _AddProductPageState extends State<AddProductPage> {
     });
   }
 
+  // --- LOGIC MỚI: ĐẨY ẢNH LÊN STORAGE VÀ LƯU THÔNG TIN LÊN FIRESTORE REALTIME ---
   Future<void> _submitData() async {
-    if (_titleController.text.trim().isEmpty || _priceController.text.trim().isEmpty) {
+    final String title = _titleController.text.trim();
+    final String price = _priceController.text.trim();
+    final String desc = _descController.text.trim();
+
+    if (title.isEmpty || price.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Vui lòng nhập tên và giá món đồ!"), backgroundColor: Colors.redAccent),
       );
@@ -48,43 +61,55 @@ class _AddProductPageState extends State<AddProductPage> {
     setState(() => _isLoading = true);
 
     try {
-      // Nhớ kiểm tra lại IP của bạn nhé
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse("http://10.60.56.48/dacs3/add_product.php"),
-      );
+      String imageUrl = "";
 
-      request.fields['user_id'] = widget.userId;
-      request.fields['title'] = _titleController.text.trim();
-      request.fields['price'] = _priceController.text.trim();
-      request.fields['description'] = _descController.text.trim();
-
+      // 1. Nếu sinh viên chọn ảnh, tiến hành tải trực tiếp lên Firebase Storage
       if (_image != null) {
-        request.files.add(await http.MultipartFile.fromPath('image', _image!.path));
+        String fileName = "market_${DateTime.now().millisecondsSinceEpoch}.jpg";
+        Reference storageRef = FirebaseStorage.instance.ref().child("marketplace/$fileName");
+
+        UploadTask uploadTask = storageRef.putFile(_image!);
+        TaskSnapshot snapshot = await uploadTask;
+        imageUrl = await snapshot.ref.getDownloadURL(); // Lấy link ảnh trực tuyến từ Google Server
       }
 
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
-      final data = jsonDecode(response.body);
+      // 2. Tra cứu nhanh bảng 'users' để lấy chính xác fullname (Họ tên) của sinh viên này
+      String buyerName = "Sinh viên VKU";
+      DocumentSnapshot userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.userId)
+          .get();
 
-      if (data['status'] == 'success') {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text("✨ Đã đăng tin thành công!"),
-                backgroundColor: vkuBlue,
-                behavior: SnackBarBehavior.floating
-            ),
-          );
-          Navigator.pop(context, true);
-        }
-      } else {
-        throw data['message'] ?? "Lỗi server";
+      if (userDoc.exists) {
+        Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+        buyerName = userData['fullname'] ?? "Sinh viên VKU";
+      }
+
+      // 3. Đẩy thông tin món đồ mới lên collection 'marketplace' trên Firestore
+      await FirebaseFirestore.instance.collection('marketplace').add({
+        'username': widget.userId, // Lưu Mã sinh viên làm trung gian liên kết
+        'fullname': buyerName,     // Đồng bộ tên thật bốc từ bảng users
+        'title': title,
+        'price': price,
+        'description': desc,
+        'image_url': imageUrl,     // Đường dẫn URL ảnh online từ Storage
+        'created_at': DateTime.now().toString().substring(0, 19), // Khớp format thời gian thực
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text("✨ Đã đăng bài thanh lý lên Chợ KTX thành công!"),
+              backgroundColor: vkuBlue,
+              behavior: SnackBarBehavior.floating
+          ),
+        );
+        Navigator.pop(context, true); // Trả về true để Chợ tự động reload giao diện lưới
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("❌ Lỗi: ${e.toString()}"), backgroundColor: Colors.redAccent),
+          SnackBar(content: Text("❌ Lỗi hệ thống: ${e.toString()}"), backgroundColor: Colors.redAccent),
         );
       }
     } finally {
@@ -95,7 +120,7 @@ class _AddProductPageState extends State<AddProductPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: sandBg, // Nền cát đồng bộ
+      backgroundColor: sandBg,
       appBar: AppBar(
         title: const Text("ĐĂNG TIN BÁN ĐỒ",
             style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 18, letterSpacing: 1.2)),
@@ -112,7 +137,6 @@ class _AddProductPageState extends State<AddProductPage> {
           children: [
             _buildLabel("Hình ảnh sản phẩm"),
 
-            // --- KHUNG CHỌN ẢNH TÔNG SAND/BLUE ---
             GestureDetector(
               onTap: _pickImage,
               child: Container(
@@ -165,7 +189,6 @@ class _AddProductPageState extends State<AddProductPage> {
             ),
             const SizedBox(height: 30),
 
-            // --- CÁC Ô NHẬP LIỆU MÀU KEM ---
             _buildLabel("Tên món đồ"),
             _buildTextField(_titleController, "Ví dụ: Áo khoác VKU mới 99%", Icons.shopping_bag_outlined),
 
@@ -179,7 +202,6 @@ class _AddProductPageState extends State<AddProductPage> {
 
             const SizedBox(height: 35),
 
-            // --- NÚT ĐĂNG TIN MÀU XANH VKU ---
             SizedBox(
               width: double.infinity,
               height: 60,

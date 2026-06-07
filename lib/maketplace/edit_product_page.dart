@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng Firestore để update/delete
+import 'package:firebase_storage/firebase_storage.dart'; // Sử dụng Storage để up ảnh mới
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 
 class EditProductPage extends StatefulWidget {
-  final Map product;
+  final Map product; // Nhận cục data của món hàng (đã có trường 'id' document)
   const EditProductPage({super.key, required this.product});
 
   @override
@@ -20,7 +20,7 @@ class _EditProductPageState extends State<EditProductPage> {
   File? _newImage;
   final picker = ImagePicker();
 
-  // --- HỆ MÀU VÀNG CAM VKU (CHỈ CHỈNH MÀU) ---
+  // --- HỆ MÀU VÀNG CAM VKU ---
   static const Color vkuBlue = Color(0xFF072C6C);
   static const Color vkuOrange = Color(0xFFFF9800);
   static const Color vkuOrangeDark = Color(0xFFE65100);
@@ -51,8 +51,13 @@ class _EditProductPageState extends State<EditProductPage> {
     }
   }
 
+  // --- LOGIC MỚI: CẬP NHẬT TRỰC TIẾP LÊN CLOUD FIRESTORE ---
   Future<void> _updateData() async {
-    if (_titleController.text.trim().isEmpty || _priceController.text.trim().isEmpty) {
+    final String title = _titleController.text.trim();
+    final String price = _priceController.text.trim();
+    final String desc = _descController.text.trim();
+
+    if (title.isEmpty || price.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Vui lòng nhập tên và giá món đồ!"), backgroundColor: Colors.redAccent),
       );
@@ -62,61 +67,106 @@ class _EditProductPageState extends State<EditProductPage> {
     setState(() => _isLoading = true);
 
     try {
-      var request = http.MultipartRequest(
-        'POST',
-        // GIỮ NGUYÊN IP VÀ ĐƯỜNG DẪN CỦA ÔNG
-        Uri.parse("http://10.0.2.2/dacs3/update_product.php"),
-      );
+      // Mặc định giữ nguyên đường dẫn link ảnh online cũ
+      String finalImageUrl = widget.product['image_url'] ?? "";
 
-      request.fields['id'] = widget.product['id'].toString();
-      request.fields['title'] = _titleController.text.trim();
-      request.fields['price'] = _priceController.text.trim();
-      request.fields['description'] = _descController.text.trim();
-
+      // Nếu người dùng chọn ảnh mới, up đè lên Firebase Storage để lấy URL mới
       if (_newImage != null) {
-        request.files.add(await http.MultipartFile.fromPath('image', _newImage!.path));
+        String fileName = "market_${DateTime.now().millisecondsSinceEpoch}.jpg";
+        Reference storageRef = FirebaseStorage.instance.ref().child("marketplace/$fileName");
+
+        UploadTask uploadTask = storageRef.putFile(_newImage!);
+        TaskSnapshot snapshot = await uploadTask;
+        finalImageUrl = await snapshot.ref.getDownloadURL();
       }
 
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
-      final data = jsonDecode(response.body);
+      // Tiến hành update trực tiếp document cụ thể dựa trên ID bài đăng
+      await FirebaseFirestore.instance
+          .collection('marketplace')
+          .doc(widget.product['id'].toString())
+          .update({
+        'title': title,
+        'price': price,
+        'description': desc,
+        'image_url': finalImageUrl,
+      });
 
-      if (data['status'] == 'success') {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text("✅ Cập nhật thành công!"),
-                backgroundColor: vkuOrangeDark,
-                behavior: SnackBarBehavior.floating,
-              )
-          );
-          Navigator.pop(context, true);
-        }
-      } else {
-        throw data['message'] ?? "Lỗi không xác định";
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("✅ Cập nhật thông tin sản phẩm thành công!"),
+              backgroundColor: vkuOrangeDark,
+              behavior: SnackBarBehavior.floating,
+            )
+        );
+        Navigator.pop(context, true); // Trả về true để lưới chợ tự refresh dữ liệu
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("❌ Lỗi: $e"), backgroundColor: Colors.redAccent));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("❌ Lỗi hệ thống: $e"), backgroundColor: Colors.redAccent));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  // --- TÍNH NĂNG BỔ SUNG: XOÁ BÀI ĐĂNG TRỰC TIẾP TRÊN FIRESTORE ---
+  Future<void> _deleteProduct() async {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Xác nhận xóa?", style: TextStyle(fontWeight: FontWeight.bold, color: vkuBlue)),
+        content: const Text("Bạn có chắc chắn muốn gỡ mặt hàng thanh lý này khỏi chợ KTX không?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context); // Đóng hộp thoại
+              setState(() => _isLoading = true);
+              try {
+                await FirebaseFirestore.instance
+                    .collection('marketplace')
+                    .doc(widget.product['id'].toString())
+                    .delete();
+
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("🗑️ Đã gỡ sản phẩm thành công!"), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating),
+                  );
+                  Navigator.pop(context, true); // Quay về trang chợ tổng
+                }
+              } catch (e) {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+            child: const Text("XÓA", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // GIỮ NGUYÊN CÁCH LẤY ẢNH CŨ CỦA ÔNG
-    String oldImageUrl = "http://10.0.2.2/dacs3/uploads/${widget.product['image_url']}";
+    // Đã cấu hình lấy trực tiếp link URL online lưu từ Firebase Storage
+    String currentImageUrl = widget.product['image_url'] ?? "";
 
     return Scaffold(
-      backgroundColor: sandBg, // Chỉ đổi màu nền
+      backgroundColor: sandBg,
       appBar: AppBar(
         title: const Text("Chỉnh sửa sản phẩm", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        backgroundColor: vkuBlue, // Đổi màu AppBar
+        backgroundColor: vkuBlue,
         centerTitle: true,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
+        actions: [
+          // Nút xoá bài đăng gán lên góc phải cực kỳ tiện lợi
+          IconButton(
+            icon: const Icon(Icons.delete_forever_rounded, color: Colors.white, size: 24),
+            onPressed: _isLoading ? null : _deleteProduct,
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -132,7 +182,7 @@ class _EditProductPageState extends State<EditProductPage> {
                 width: double.infinity,
                 height: 240,
                 decoration: BoxDecoration(
-                  color: Colors.white, // Khung ảnh trắng cho rõ
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(25),
                   border: Border.all(color: vkuOrange.withOpacity(0.3), width: 1.5),
                 ),
@@ -141,9 +191,9 @@ class _EditProductPageState extends State<EditProductPage> {
                     ClipRRect(
                       borderRadius: BorderRadius.circular(23),
                       child: _newImage == null
-                          ? (widget.product['image_url'] != null && widget.product['image_url'] != ""
+                          ? (currentImageUrl.startsWith('http')
                           ? Image.network(
-                        oldImageUrl,
+                        currentImageUrl,
                         fit: BoxFit.cover,
                         width: double.infinity,
                         height: double.infinity,
@@ -158,8 +208,8 @@ class _EditProductPageState extends State<EditProductPage> {
                       right: 15,
                       child: Container(
                         padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: vkuOrange, // Icon chọn ảnh màu Cam
+                        decoration: const BoxDecoration(
+                          color: vkuOrange,
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.camera_enhance_rounded, color: Colors.white, size: 20),
@@ -190,14 +240,14 @@ class _EditProductPageState extends State<EditProductPage> {
               child: ElevatedButton(
                 onPressed: _isLoading ? null : _updateData,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: vkuOrangeDark, // Nút lưu màu Cam đậm
+                  backgroundColor: vkuOrangeDark,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
                   elevation: 6,
                 ),
                 child: _isLoading
                     ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text("LƯU THAY ĐỔI", style: TextStyle(fontWeight: FontWeight.bold)),
+                    : const Text("LƯU THAY ĐỔI", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
               ),
             ),
           ],
@@ -219,6 +269,7 @@ class _EditProductPageState extends State<EditProductPage> {
       controller: controller,
       keyboardType: isNumber ? TextInputType.number : TextInputType.text,
       maxLines: maxLines,
+      style: const TextStyle(fontWeight: FontWeight.bold, color: vkuBlue),
       decoration: InputDecoration(
         prefixIcon: Icon(icon, color: vkuOrange),
         filled: true,

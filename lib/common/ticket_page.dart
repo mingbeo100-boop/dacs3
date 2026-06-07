@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:photo_view/photo_view.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 
 class TicketPage extends StatefulWidget {
   final dynamic user;
@@ -24,52 +23,92 @@ class _TicketPageState extends State<TicketPage> {
   File? _image;
   final picker = ImagePicker();
   bool _isSending = false;
-  List<dynamic> _ticketList = [];
   String _selectedTab = "Đang chờ";
 
-  final String serverUrl = "http://10.60.56.48/dacs3";
-
   @override
-  void initState() {
-    super.initState();
-    if (widget.user != null) _loadTickets();
+  void dispose() {
+    _contentController.dispose();
+    _noteController.dispose();
+    super.dispose();
   }
 
-  // --- HÀM TẢI DỮ LIỆU ---
-  Future<void> _loadTickets() async {
-    try {
-      final String url = "$serverUrl/manage_tickets.php?role=${widget.user['role']}&room_id=${widget.user['room_id']}";
-      final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 4));
-      if (res.statusCode == 200 && mounted) {
-        setState(() => _ticketList = jsonDecode(res.body));
-      }
-    } catch (e) { debugPrint("Lỗi tải ticket: $e"); }
-  }
-
-  // --- CẬP NHẬT TRẠNG THÁI (ADMIN) ---
+  // --- LOGIC MỚI: CẬP NHẬT TRẠNG THÁI SỰ CỐ LÊN FIRESTORE (ADMIN) ---
   Future<void> _updateTicketFull(dynamic id, String status, String note) async {
-    Navigator.pop(context); // Đóng modal ngay
-    setState(() {
-      int index = _ticketList.indexWhere((t) => t['id'].toString() == id.toString());
-      if (index != -1) {
-        _ticketList[index]['status'] = status;
-        _ticketList[index]['admin_note'] = note;
-      }
-    });
+    Navigator.pop(context); // Đóng nhanh bottom sheet
     try {
-      await http.post(Uri.parse("$serverUrl/update_ticket_status.php"),
-          body: {"ticket_id": id.toString(), "status": status, "admin_note": note});
-      _loadTickets();
-    } catch (e) { _loadTickets(); }
+      // Cập nhật tài liệu dựa vào đúng ID Document trong collection 'tickets'
+      await FirebaseFirestore.instance
+          .collection('tickets')
+          .doc(id.toString())
+          .update({
+        "status": status,
+        "admin_note": note,
+      });
+    } catch (e) {
+      debugPrint("Lỗi cập nhật trạng thái sự cố: $e");
+    }
+  }
+
+  // --- LOGIC MỚI: ĐỒNG BỘ MÃ SINH VIÊN (USERNAME) LÊN ĐÁM MÂY (STUDENT) ---
+  Future<void> _sendTicket() async {
+    if (_contentController.text.trim().isEmpty) return;
+    setState(() => _isSending = true);
+    try {
+      String imageUrl = "";
+
+      if (_image != null) {
+        String fileName = "ticket_${DateTime.now().millisecondsSinceEpoch}.jpg";
+        Reference storageRef = FirebaseStorage.instance.ref().child("tickets/$fileName");
+
+        UploadTask uploadTask = storageRef.putFile(_image!);
+        TaskSnapshot snapshot = await uploadTask;
+        imageUrl = await snapshot.ref.getDownloadURL();
+      }
+
+      // Đẩy bản ghi lên Firestore đồng bộ theo trường 'username'
+      await FirebaseFirestore.instance.collection('tickets').add({
+        'username': widget.user['username'].toString(), // Đồng bộ dùng Mã sinh viên
+        'fullname': widget.user['fullname'] ?? "Sinh viên VKU",
+        'room_id': widget.user['room_id'].toString(),
+        'content': _contentController.text.trim(),
+        'image_url': imageUrl,
+        'status': 'pending',
+        'admin_note': '',
+        'created_at': DateTime.now().toString().substring(0, 19),
+      });
+
+      _contentController.clear();
+      setState(() {
+        _image = null;
+        _isSending = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("✅ Đã gửi yêu cầu hỗ trợ đến Ban quản lý!"),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: vkuBlue,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isSending = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     bool isAdmin = widget.user?['role'] == 'admin';
-    List<dynamic> filteredList = _ticketList.where((t) {
-      if (_selectedTab == "Đang chờ") return t['status'] != 'completed';
-      return t['status'] == 'completed';
-    }).toList();
+
+    // Xây dựng bộ Query lắng nghe thời gian thực dựa trên phân quyền bảng Firestore
+    Query ticketQuery = FirebaseFirestore.instance.collection('tickets');
+    if (!isAdmin) {
+      // Sinh viên chỉ lắng nghe các sự cố thuộc về phòng của mình
+      ticketQuery = ticketQuery.where('room_id', isEqualTo: widget.user['room_id'].toString());
+    }
+    // Xếp các yêu cầu sửa chữa mới nhất lên trên đầu
+    ticketQuery = ticketQuery.orderBy('created_at', descending: true);
 
     return Scaffold(
       backgroundColor: sandBg,
@@ -78,23 +117,57 @@ class _TicketPageState extends State<TicketPage> {
           children: [
             _buildCustomHeader(),
             Expanded(
-              child: CustomScrollView(
-                physics: const BouncingScrollPhysics(),
-                slivers: [
-                  if (!isAdmin) SliverToBoxAdapter(child: _buildAdvancedInputCard()),
-                  SliverToBoxAdapter(child: _buildFilterTab()),
-                  SliverToBoxAdapter(child: _buildSectionTitle(isAdmin ? "DANH SÁCH ĐIỀU PHỐI" : "LỊCH SỬ PHẢN HỒI")),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    sliver: SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                            (context, index) => _buildEnhancedTicketCard(filteredList[index], isAdmin),
-                        childCount: filteredList.length,
+              // DÙNG STREAMBUILDER ĐỂ TỰ ĐỘNG CẬP NHẬT GIAO DIỆN THỜI GIAN THỰC (REALTIME)
+              child: StreamBuilder<QuerySnapshot>(
+                stream: ticketQuery.snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return Center(child: Text("Lỗi tải dữ liệu: ${snapshot.error}"));
+                  }
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator(color: vkuOrange));
+                  }
+
+                  // Chuyển đổi dữ liệu từ QuerySnapshot sang List quen thuộc của bạn
+                  List<dynamic> allTickets = snapshot.data!.docs.map((doc) {
+                    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+                    data['id'] = doc.id;
+                    return data;
+                  }).toList();
+
+                  // Bộ lọc Tab "Đang chờ" hay "Hoàn thành" giữ nguyên logic cũ
+                  List<dynamic> filteredList = allTickets.where((t) {
+                    if (_selectedTab == "Đang chờ") return t['status'] != 'completed';
+                    return t['status'] == 'completed';
+                  }).toList();
+
+                  return CustomScrollView(
+                    physics: const BouncingScrollPhysics(),
+                    slivers: [
+                      if (!isAdmin) SliverToBoxAdapter(child: _buildAdvancedInputCard()),
+                      SliverToBoxAdapter(child: _buildFilterTab()),
+                      SliverToBoxAdapter(child: _buildSectionTitle(isAdmin ? "DANH SÁCH ĐIỀU PHỐI" : "LỊCH SỬ PHẢN HỒI")),
+
+                      filteredList.isEmpty
+                          ? const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(40),
+                          child: Center(child: Text("Chưa có ghi nhận sự cố nào ở mục này.", style: TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))),
+                        ),
+                      )
+                          : SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        sliver: SliverList(
+                          delegate: SliverChildBuilderDelegate(
+                                (context, index) => _buildEnhancedTicketCard(filteredList[index], isAdmin),
+                            childCount: filteredList.length,
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  const SliverToBoxAdapter(child: SizedBox(height: 50)),
-                ],
+                      const SliverToBoxAdapter(child: SizedBox(height: 50)),
+                    ],
+                  );
+                },
               ),
             ),
           ],
@@ -103,7 +176,6 @@ class _TicketPageState extends State<TicketPage> {
     );
   }
 
-  // --- HEADER & INPUT CỦA ÔNG ---
   Widget _buildCustomHeader() {
     return Container(
       width: double.infinity, padding: const EdgeInsets.fromLTRB(10, 20, 10, 10),
@@ -158,17 +230,15 @@ class _TicketPageState extends State<TicketPage> {
       child: ListTile(
         onTap: () => _showTicketDetail(item),
         leading: Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: statusColor.withOpacity(0.1), shape: BoxShape.circle), child: Icon(statusIcon, color: statusColor, size: 20)),
-        title: Text(isAdmin ? "Sinh viên: ${item['fullname']}" : "Sự cố phòng ${item['room_id']}", style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 14)),
+        title: Text(isAdmin ? "Sinh viên: ${item['fullname'] ?? "Ẩn danh"}" : "Sự cố phòng ${item['room_id']}", style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 14)),
         subtitle: Text(item['content'] ?? "", maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
         trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 12, color: Colors.grey),
       ),
     );
   }
 
-  // --- HÀM SHOW CHI TIẾT (ĐÃ KHÔI PHỤC VÀ TỐI ƯU) ---
   void _showTicketDetail(dynamic item) {
-    String imgUrl = item['image_url'] != null && item['image_url'].toString().isNotEmpty
-        ? item['image_url'].toString().replaceFirst('http://localhost', serverUrl.replaceFirst('/dacs3', '')) : "";
+    String imgUrl = (item['image_url'] != null && item['image_url'].toString().isNotEmpty) ? item['image_url'].toString() : "";
     bool isAdmin = widget.user?['role'] == 'admin';
     String status = item['status'] ?? 'pending';
     _noteController.text = item['admin_note'] ?? "";
@@ -237,21 +307,5 @@ class _TicketPageState extends State<TicketPage> {
   Future<void> _pickImage() async {
     final p = await picker.pickImage(source: ImageSource.gallery);
     if (p != null) setState(() => _image = File(p.path));
-  }
-
-  Future<void> _sendTicket() async {
-    if (_contentController.text.trim().isEmpty) return;
-    setState(() => _isSending = true);
-    try {
-      var req = http.MultipartRequest('POST', Uri.parse("$serverUrl/manage_tickets.php"));
-      req.fields['user_id'] = widget.user['id'].toString();
-      req.fields['room_id'] = widget.user['room_id'].toString();
-      req.fields['content'] = _contentController.text;
-      if (_image != null) req.files.add(await http.MultipartFile.fromPath('image', _image!.path));
-      await req.send();
-      _contentController.clear(); setState(() { _image = null; _isSending = false; });
-      _loadTickets();
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("✅ Đã gửi yêu cầu hỗ trợ!"), behavior: SnackBarBehavior.floating, backgroundColor: vkuBlue));
-    } catch (e) { setState(() => _isSending = false); }
   }
 }

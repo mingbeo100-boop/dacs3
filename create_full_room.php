@@ -1,53 +1,64 @@
-<?php
-include_once 'db_config.php';
-header('Content-Type: application/json; charset=utf-8');
+// --- HÀM KHỞI TẠO PHÒNG MỚI VÀ TỰ ĐỘNG THÊM 4 THIẾT BỊ MẪU LÊN FIRESTORE ---
+Future<void> addRoomWithDefaultDevices(String newRoomNumber, BuildContext context) async {
+  if (newRoomNumber.trim().isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Vui lòng nhập số phòng!"), backgroundColor: Colors.redAccent),
+    );
+    return;
+  }
 
-// Giả sử ông truyền tên phòng mới lên
-$new_room_number = isset($_POST['room_number']) ? $_POST['room_number'] : '';
+  // Khởi tạo hàng đợi chứa cấu hình 4 thiết bị IoT mẫu chuẩn của nhóm ông
+  final List<Map<String, dynamic>> defaultDevices = [
+    {'name': 'Bóng đèn', 'type': 'light', 'watt': 20},
+    {'name': 'Quạt máy', 'type': 'fan', 'watt': 65},
+    {'name': 'Điều hòa', 'type': 'ac', 'watt': 1200},
+    {'name': 'Khóa cửa', 'type': 'lock', 'watt': 10}
+  ];
 
-if (empty($new_room_number)) {
-    echo json_encode(["error" => "Vui lòng nhập số phòng"]);
-    exit;
-}
-
-try {
-    $conn->beginTransaction(); // Bắt đầu giao dịch (để tránh lỗi nửa chừng)
-
-    // Bước 1: Tạo phòng mới trong bảng rooms
-    $sqlRoom = "INSERT INTO rooms (room_number) VALUES (:num)";
-    $stmtRoom = $conn->prepare($sqlRoom);
-    $stmtRoom->execute(['num' => $new_room_number]);
+  try {
+    final firestore = FirebaseFirestore.instance;
     
-    // Lấy ID của phòng vừa tạo
-    $new_room_id = $conn->lastInsertId();
+    // Sử dụng WriteBatch (Cơ chế tương đương Transaction của SQL để ghi đồng loạt bảo mật)
+    WriteBatch batch = firestore.batch();
 
-    // Bước 2: Tự động chèn 4 thiết bị mẫu cho phòng này
-    $devices = [
-        ['name' => 'Bóng đèn', 'type' => 'light', 'watt' => 20],
-        ['name' => 'Quạt máy', 'type' => 'fan', 'watt' => 65],
-        ['name' => 'Điều hòa', 'type' => 'ac', 'watt' => 1200],
-        ['name' => 'Khóa cửa', 'type' => 'lock', 'watt' => 10]
-    ];
+    for (var device in defaultDevices) {
+      // Tạo một tài liệu (document) ngẫu nhiên mới trong collection 'devices'
+      DocumentReference deviceRef = firestore.collection('devices').doc();
 
-    $sqlDevice = "INSERT INTO devices (room_id, device_name, device_type, status, mqtt_topic, watt_usage, total_kwh) 
-                  VALUES (:rid, :name, :type, 0, :topic, :watt, 0)";
-    $stmtDevice = $conn->prepare($sqlDevice);
+      // Định dạng chuỗi Topic MQTT đồng bộ theo số phòng (ví dụ: vku/nhatlong/room101/all)
+      String cleanRoomNumber = newRoomNumber.trim().replaceAll('_', '');
+      String mqttTopic = "vku/nhatlong/room$cleanRoomNumber/all";
 
-    foreach ($devices as $d) {
-        $stmtDevice->execute([
-            'rid'   => $new_room_id,
-            'name'  => $d['name'],
-            'type'  => $d['type'],
-            'topic' => "vku/nhatlong/room" . str_replace('_', '', $new_room_number) . "/all",
-            'watt'  => $d['watt']
-        ]);
+      batch.set(deviceRef, {
+        'room_id': newRoomNumber.trim(), // Mã phòng quản lý
+        'device_name': device['name'],
+        'device_type': device['type'],
+        'status': '0', // Mặc định ban đầu ở trạng thái TẮT
+        'mqtt_topic': mqttTopic,
+        'watt_usage': device['watt'],
+        'total_kwh': 0.0, // Chỉ số điện năng tiêu thụ ban đầu bằng 0
+        'created_at': DateTime.now().toString().substring(0, 19),
+      });
     }
 
-    $conn->commit(); // Hoàn tất lưu dữ liệu
-    echo json_encode(["status" => "success", "msg" => "Đã tạo xong phòng $new_room_number và 4 thiết bị!"]);
+    // Thực thi đẩy đồng loạt 4 thiết bị lên mây cùng 1 thời điểm (0ms delay)
+    await batch.commit();
 
-} catch (Exception $e) {
-    $conn->rollBack(); // Nếu lỗi thì hủy bỏ toàn bộ để tránh rác DB
-    echo json_encode(["error" => $e->getMessage()]);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("✅ Đã tạo xong phòng $newRoomNumber và 4 thiết bị IoT!"),
+          backgroundColor: const Color(0xFF072C6C), // Màu vkuBlue đặc trưng
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  } catch (e) {
+    debugPrint("Lỗi khởi tạo phòng IoT mây: $e");
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ Lỗi: ${e.toString()}"), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
 }
-?>

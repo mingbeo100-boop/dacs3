@@ -49,7 +49,7 @@ if (isset($_FILES['avatar'])) {
     if (move_uploaded_file($_FILES["avatar"]["tmp_name"], $target_file)) {
         // --- ĐÂY LÀ PHẦN QUAN TRỌNG NHẤT NHẬT LONG CẦN ---
         
-        $full_url = "http://10.60.56.48/dacs3/" . $target_file;
+        $full_url = "http:// 172.16.0.226/dacs3/" . $target_file;
         
         $updates[] = "avatar_url = ?";
         $params[] = $full_url; 

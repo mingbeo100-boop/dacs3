@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class ProductDetailPage extends StatelessWidget {
-  final Map product;
+  final Map product; // Nhận cục data Map truyền từ Grid lưới sang
   const ProductDetailPage({super.key, required this.product});
 
   @override
@@ -12,11 +12,11 @@ class ProductDetailPage extends StatelessWidget {
     const sandBg = Color(0xFFF5E1C5);
     const cardBg = Color(0xFFFFF8F0);
 
-    // Đường dẫn ảnh từ server
-    String imageUrl = "http://10.0.2.2/dacs3/uploads/${product['image_url']}";
+    // ĐỒNG BỘ: Đón đầu link ảnh online trực tiếp từ Firebase Storage
+    String imageUrl = product['image_url'] ?? "";
 
     return Scaffold(
-      backgroundColor: sandBg, // Đổi nền trang thành màu cát
+      backgroundColor: sandBg,
       appBar: AppBar(
         title: const Text(
             "CHI TIẾT SẢN PHẨM",
@@ -25,7 +25,6 @@ class ProductDetailPage extends StatelessWidget {
         backgroundColor: vkuBlue,
         elevation: 0,
         centerTitle: true,
-        // NÚT BACK NỔI BẬT ĐỒNG BỘ VỚI TRANG POWER
         leading: Padding(
           padding: const EdgeInsets.all(10.0),
           child: GestureDetector(
@@ -46,7 +45,7 @@ class ProductDetailPage extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 1. PHẦN HÌNH ẢNH TRÀN VIỀN
+            // 1. PHẦN HÌNH ẢNH TRÀN VIỀN LẤY TỪ STORAGE
             Container(
               height: 380,
               width: double.infinity,
@@ -69,11 +68,15 @@ class ProductDetailPage extends StatelessWidget {
                   bottomLeft: Radius.circular(40),
                   bottomRight: Radius.circular(40),
                 ),
-                child: Image.network(
+                child: imageUrl.startsWith('http')
+                    ? Image.network(
                   imageUrl,
                   fit: BoxFit.cover,
                   errorBuilder: (context, error, stackTrace) =>
                   const Icon(Icons.image_not_supported, size: 80, color: Colors.grey),
+                )
+                    : const Center(
+                  child: Icon(Icons.image_not_supported_rounded, size: 80, color: Colors.grey),
                 ),
               ),
             ),
@@ -125,7 +128,8 @@ class ProductDetailPage extends StatelessWidget {
                     ),
                     child: Column(
                       children: [
-                        _buildInfoRow(Icons.account_circle_rounded, "Người bán", product['fullname'] ?? "Sinh viên VKU", vkuBlue),
+                        // ĐỒNG BỘ: Đọc chính xác fullname bốc từ bảng Firestore sang
+                        _buildInfoRow(Icons.account_circle_rounded, "Người bán", product['fullname'] ?? product['username'] ?? "Sinh viên VKU", vkuBlue),
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 12),
                           child: Divider(color: Colors.black12, thickness: 0.5),

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../admin/admin_power_usage_page.dart';
 import '../student/student_power_usage_page.dart';
@@ -79,39 +78,88 @@ class _HomePageState extends State<HomePage> {
     return result;
   }
 
-  // --- API HANDLERS (IP 1.21) ---
   Future<void> _loadAdminStats() async {
     try {
-      final res = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_admin_home_stats.php")).timeout(const Duration(seconds: 4));
-      if (res.statusCode == 200 && mounted) {
-        final data = jsonDecode(res.body);
-        setState(() { adminStats = {"devices": (data['devices'] ?? 0).toString(), "requests": (data['requests'] ?? 0).toString(), "residents": (data['residents'] ?? 0).toString()}; });
+      final results = await Future.wait([
+        FirebaseFirestore.instance.collection('devices').get(),
+        FirebaseFirestore.instance.collection('tickets').where('status', isNotEqualTo: 'completed').get(),
+        FirebaseFirestore.instance.collection('users').where('role', isEqualTo: 'student').get(),
+      ]).timeout(const Duration(seconds: 4));
+
+      if (mounted) {
+        setState(() {
+          adminStats = {
+            "devices": results[0].docs.length.toString(),
+            "requests": results[1].docs.length.toString(),
+            "residents": results[2].docs.length.toString()
+          };
+        });
       }
-    } catch (e) { debugPrint(e.toString()); }
+    } catch (e) {
+      debugPrint("Lỗi tải thống kê Admin: $e");
+    }
   }
 
+  // --- ĐỒNG BỘ: ĐẾM THÔNG BÁO THEO USERNAME (MÃ SINH VIÊN) ---
   Future<void> _checkPrivateNotifications() async {
     try {
-      final res = await http.get(Uri.parse("http://10.60.56.48/dacs3/manage_notifications.php?user_id=${currentUser['id']}"));
-      if (res.statusCode == 200 && mounted) setState(() => unreadCount = jsonDecode(res.body)['unread_count'] ?? 0);
-    } catch (e) { debugPrint(e.toString()); }
+      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+          .collection('notifications')
+          .where('username', isEqualTo: currentUser['username'].toString())
+          .where('is_read', isEqualTo: false)
+          .get();
+
+      if (mounted) {
+        setState(() => unreadCount = querySnapshot.docs.length);
+      }
+    } catch (e) {
+      debugPrint("Lỗi đếm thông báo: $e");
+    }
   }
 
   Future<void> _loadAllNews() async {
     try {
-      final res = await http.get(Uri.parse("http://10.60.56.48/dacs3/manage_news.php?all=true"));
-      if (res.statusCode == 200 && mounted) setState(() { ktxNewsList = jsonDecode(res.body)['news_list'] ?? []; isNewsLoading = false; });
-    } catch (e) { if (mounted) setState(() => isNewsLoading = false); }
+      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+          .collection('news')
+          .orderBy('created_at', descending: true)
+          .get();
+
+      if (mounted) {
+        setState(() {
+          ktxNewsList = querySnapshot.docs.map((doc) {
+            Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+            data['id'] = doc.id;
+            return data;
+          }).toList();
+          isNewsLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => isNewsLoading = false);
+    }
   }
 
+  // --- ĐỒNG BỘ: REFRESH PROFILE DỰA VÀO ĐỊNH DANH USERNAME TRONG BẢNG ---
   Future<void> _refreshUserData() async {
     try {
-      final res = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_profile.php?user_id=${currentUser['id']}"));
-      if (res.statusCode == 200 && mounted) {
-        final data = jsonDecode(res.body);
-        setState(() { currentUser['fullname'] = data['fullname'] ?? currentUser['fullname']; currentUser['avatar_url'] = data['avatar_url']; displayRoom = (data['room_number'] ?? data['room_id'] ?? "Chưa rõ").toString(); });
+      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('username', isEqualTo: currentUser['username'].toString())
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isNotEmpty && mounted) {
+        Map<String, dynamic> data = querySnapshot.docs.first.data() as Map<String, dynamic>;
+        setState(() {
+          currentUser['fullname'] = data['fullname'] ?? currentUser['fullname'];
+          currentUser['avatar_url'] = data['avatar_url'] ?? "";
+          displayRoom = (data['room_id'] ?? "Chưa rõ").toString();
+          currentUser['room_id'] = displayRoom;
+        });
       }
-    } catch (e) { debugPrint(e.toString()); }
+    } catch (e) {
+      debugPrint("Lỗi cập nhật Profile tại Home: $e");
+    }
   }
 
   @override
@@ -125,7 +173,7 @@ class _HomePageState extends State<HomePage> {
           physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
           children: [
             _buildHomeContent(),
-            MarketplacePage(userId: currentUser['id'].toString(), role: currentUser['role']),
+            MarketplacePage(userId: currentUser['username'].toString(), role: currentUser['role']),
             ProfilePage(user: currentUser),
           ],
         ),
@@ -145,7 +193,7 @@ class _HomePageState extends State<HomePage> {
         physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
         cacheExtent: 1000,
         slivers: [
-          _buildSliverHeader(userRole, currentUser['id'].toString()),
+          _buildSliverHeader(userRole, currentUser['username'].toString()),
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(25, 20, 25, 10),
@@ -160,7 +208,6 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // --- LƯỚI 4 Ô DỊCH VỤ CÂN ĐỐI ---
           SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 10),
             sliver: SliverGrid.count(
@@ -204,8 +251,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- WIDGETS TỐI ƯU ---
-
   Widget _buildSliverHeader(String role, String userId) {
     return SliverToBoxAdapter(
       child: Padding(
@@ -223,7 +268,7 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 15),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(role == 'admin' ? "Quản trị viên," : "Thành viên VKU,", style: const TextStyle(color: vkuBlue, fontSize: 12, fontWeight: FontWeight.w500)),
-            Text(currentUser['fullname'], style: const TextStyle(color: vkuBlue, fontSize: 17, fontWeight: FontWeight.w900)),
+            Text(currentUser['fullname'] ?? "Học viên", style: const TextStyle(color: vkuBlue, fontSize: 17, fontWeight: FontWeight.w900)),
           ])),
           _buildTopIconButton(role == 'admin' ? Icons.notifications_active_rounded : Icons.notifications_active_outlined, () {
             if (role == 'admin') { _showNotificationDialog(); }
@@ -297,7 +342,7 @@ class _HomePageState extends State<HomePage> {
             if (role == 'admin') IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: const Icon(Icons.delete_sweep_rounded, color: Colors.redAccent, size: 18), onPressed: () => _confirmDeleteNews(news['id'])),
           ]),
           const SizedBox(height: 5),
-          Text(news['content'], style: TextStyle(color: darkText.withOpacity(0.7), fontSize: 12, height: 1.4)),
+          Text(news['content'] ?? "", style: TextStyle(color: darkText.withOpacity(0.7), fontSize: 12, height: 1.4)),
         ])),
       ]),
     );
@@ -351,6 +396,27 @@ class _HomePageState extends State<HomePage> {
   Widget _buildTopIconButton(IconData icon, VoidCallback onTap) => Container(decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(15)), child: IconButton(onPressed: onTap, icon: Icon(icon, color: vkuBlue, size: 22)));
   Widget _buildStatCard(String v, String l, IconData i, Color c, VoidCallback t) => Expanded(child: InkWell(onTap: t, child: Container(padding: const EdgeInsets.all(15), decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(20)), child: Column(children: [Icon(i, color: c, size: 20), Text(v, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18)), Text(l, style: const TextStyle(fontSize: 8))]))));
   Widget _buildNewsTitleSection() => SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.fromLTRB(25, 20, 25, 10), child: Row(children: [Container(width: 5, height: 18, color: vkuOrange), const SizedBox(width: 10), const Text("TIN TỨC KTX", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14))])));
-  void _confirmDeleteNews(dynamic id) { showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Xóa tin tức?"), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), TextButton(onPressed: () async { await http.delete(Uri.parse("http://10.60.56.48/dacs3/manage_news.php?id=$id")); Navigator.pop(context); _loadAllNews(); }, child: const Text("XÓA", style: TextStyle(color: Colors.red)))])); }
-  void _showNotificationDialog() { TextEditingController ctrl = TextEditingController(); showDialog(context: context, builder: (context) => AlertDialog(title: const Text("PHÁT TIN MỚI"), content: TextField(controller: ctrl, maxLines: 3), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), ElevatedButton(onPressed: () async { if(ctrl.text.isEmpty) return; await http.post(Uri.parse("http://10.60.56.48/dacs3/manage_news.php"), body: {"content": ctrl.text}); Navigator.pop(context); _loadAllNews(); }, child: const Text("GỬI"))])); }
+
+  void _confirmDeleteNews(dynamic id) {
+    showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Xóa tin tức?"), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), TextButton(onPressed: () async {
+      await FirebaseFirestore.instance.collection('news').doc(id.toString()).delete();
+      if (!mounted) return;
+      Navigator.pop(context);
+      _loadAllNews();
+    }, child: const Text("XÓA", style: TextStyle(color: Colors.red)))]));
+  }
+
+  void _showNotificationDialog() {
+    TextEditingController ctrl = TextEditingController();
+    showDialog(context: context, builder: (context) => AlertDialog(title: const Text("PHÁT TIN MỚI"), content: TextField(controller: ctrl, maxLines: 3), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY")), ElevatedButton(onPressed: () async {
+      if(ctrl.text.trim().isEmpty) return;
+      await FirebaseFirestore.instance.collection('news').add({
+        "content": ctrl.text.trim(),
+        "created_at": DateTime.now().toString().substring(0, 19)
+      });
+      if (!mounted) return;
+      Navigator.pop(context);
+      _loadAllNews();
+    }, child: const Text("GỬI"))]));
+  }
 }

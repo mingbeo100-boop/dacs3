@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để duyệt hóa đơn Realtime
 
 class AdminVerifyPaymentPage extends StatefulWidget {
   const AdminVerifyPaymentPage({super.key});
@@ -10,69 +9,50 @@ class AdminVerifyPaymentPage extends StatefulWidget {
 }
 
 class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
-  final String baseUrl = "http://10.60.56.48/dacs3";
   static const vkuBlue = Color(0xFF072C6C);
   static const vkuOrange = Color(0xFFFF8C00);
   static const sandBg = Color(0xFFF5E1C5);
   static const darkText = Color(0xFF263238);
 
-  List<dynamic> pendingInvoices = [];
-  bool isLoading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchPendingInvoices();
-  }
-
-  // --- LOGIC API ---
-  Future<void> _fetchPendingInvoices() async {
-    if (!mounted) return;
-    setState(() => isLoading = true);
+  // --- LOGIC MỚI: PHÊ DUYỆT THANH TOÁN TRỰC TIẾP TRÊN CLOUD FIRESTORE ---
+  Future<void> _approveInvoice(String docId, String roomId) async {
     try {
-      final response = await http.get(Uri.parse("$baseUrl/get_pending_invoices.php"));
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (mounted) {
-          setState(() {
-            pendingInvoices = data['data'] ?? [];
-            isLoading = false;
-          });
-        }
+      // 1. Cập nhật trạng thái hóa đơn điện thành 'completed' (Đã đóng tiền)
+      await FirebaseFirestore.instance
+          .collection('power_usages')
+          .doc(docId)
+          .update({
+        "status": "completed",
+        "approved_at": DateTime.now().toString().substring(0, 19),
+      });
+
+      // 2. TỰ ĐỘNG CẬP NHẬT TRẠNG THÁI 'is_paid = true' CHO TẤT CẢ SINH VIÊN THUỘC PHÒNG ĐÓ
+      QuerySnapshot usersSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('room_id', isEqualTo: roomId)
+          .get();
+
+      WriteBatch batch = FirebaseFirestore.instance.batch();
+      for (var doc in usersSnapshot.docs) {
+        batch.update(doc.reference, {"is_paid": true});
       }
-    } catch (e) {
-      if (mounted) setState(() => isLoading = false);
-      debugPrint("Lỗi tải biên lai: $e");
-    }
-  }
+      await batch.commit();
 
-  Future<void> _approveInvoice(String id) async {
-    try {
-      final response = await http.post(
-        Uri.parse("$baseUrl/approve_invoice.php"),
-        body: {"invoice_id": id},
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("✅ Đã phê duyệt thanh toán & cập nhật trạng thái phòng thành công!"),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          margin: EdgeInsets.all(20),
+        ),
       );
-      if (response.statusCode == 200) {
-        final res = jsonDecode(response.body);
-        if (res['success']) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("✅ Đã phê duyệt thanh toán thành công!"),
-              backgroundColor: Colors.green,
-              behavior: SnackBarBehavior.floating,
-              margin: EdgeInsets.all(20),
-            ),
-          );
-          _fetchPendingInvoices();
-        }
-      }
     } catch (e) {
-      debugPrint("Lỗi duyệt: $e");
+      debugPrint("Lỗi duyệt hóa đơn trên đám mây: $e");
     }
   }
 
-  // --- TIỆN ÍCH ---
+  // --- TIỆN ÍCH GIỮ NGUYÊN ---
   String _formatMoney(dynamic amount) {
     double value = double.tryParse(amount.toString()) ?? 0;
     return value.toInt().toString().replaceAllMapped(
@@ -90,7 +70,9 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
               child: InteractiveViewer(
                 minScale: 0.5,
                 maxScale: 4.0,
-                child: Image.network(url, fit: BoxFit.contain),
+                child: url.startsWith('http')
+                    ? Image.network(url, fit: BoxFit.contain)
+                    : const Center(child: Icon(Icons.broken_image, size: 50, color: Colors.white)),
               ),
             ),
           ),
@@ -108,6 +90,8 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
 
   // --- GIAO DIỆN CHI TIẾT ĐỐI SOÁT ---
   void _showDetailDialog(dynamic item) {
+    String receiptUrl = item['receipt_image'] ?? "";
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -118,7 +102,6 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Header Dialog
             Container(
               padding: const EdgeInsets.all(20),
               decoration: const BoxDecoration(
@@ -134,19 +117,18 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
                 ],
               ),
             ),
-            // Nội dung
             Flexible(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   children: [
-                    const Text("MINH CHỨNG CHUYỂN KHOẢN",
+                    const Text("MINH CHỨNG CHUYỂN KHOẢN ONLINE",
                         style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: vkuOrange, letterSpacing: 1.2)),
                     const SizedBox(height: 15),
 
-                    // Ảnh biên lai (Click để zoom)
+                    // Đọc link URL online lưu trực tiếp từ Firebase Storage
                     GestureDetector(
-                      onTap: () => _showFullScreenImage("$baseUrl/uploads/bienlai/${item['evidence_img']}"),
+                      onTap: () => _showFullScreenImage(receiptUrl),
                       child: Container(
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(20),
@@ -155,31 +137,22 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(18),
-                          child: Image.network(
-                            "$baseUrl/uploads/bienlai/${item['evidence_img']}",
+                          child: receiptUrl.startsWith('http')
+                              ? Image.network(
+                            receiptUrl,
                             fit: BoxFit.contain,
                             loadingBuilder: (context, child, loadingProgress) {
                               if (loadingProgress == null) return child;
                               return const SizedBox(height: 200, child: Center(child: CircularProgressIndicator(color: vkuOrange)));
                             },
-                            errorBuilder: (context, error, stackTrace) => Container(
-                              height: 150, width: double.infinity,
-                              color: Colors.grey.shade100,
-                              child: const Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.image_not_supported_rounded, color: Colors.grey, size: 40),
-                                  Text("Không tìm thấy ảnh biên lai", style: TextStyle(color: Colors.grey, fontSize: 12)),
-                                ],
-                              ),
-                            ),
-                          ),
+                            errorBuilder: (context, error, stackTrace) => _imageErrorWidget(),
+                          )
+                              : _imageErrorWidget(),
                         ),
                       ),
                     ),
                     const SizedBox(height: 20),
 
-                    // Box Số tiền nổi bật
                     Container(
                       padding: const EdgeInsets.all(15),
                       decoration: BoxDecoration(
@@ -200,7 +173,6 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
                 ),
               ),
             ),
-            // Actions
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
               child: Row(
@@ -229,7 +201,7 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
                       ),
                       onPressed: () {
                         Navigator.pop(context);
-                        _approveInvoice(item['id'].toString());
+                        _approveInvoice(item['id'].toString(), item['room_id'].toString());
                       },
                       child: const Text("XÁC NHẬN KHỚP", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
                     ),
@@ -243,9 +215,29 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
     );
   }
 
-  // --- BUILD CHÍNH ---
+  Widget _imageErrorWidget() {
+    return Container(
+      height: 200, width: double.infinity,
+      color: Colors.grey.shade100,
+      child: const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.image_not_supported_rounded, color: Colors.grey, size: 40),
+          Text("Không tìm thấy ảnh biên lai mây", style: TextStyle(color: Colors.grey, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+
+  // --- BUILD CHÍNH LẮNG NGHE REALTIME ---
   @override
   Widget build(BuildContext context) {
+    // STREAM LẮNG NGHE REALTIME CÁC HÓA ĐƠN ĐANG CHỜ DUYỆT (STATUS = PROCESSING)
+    final Stream<QuerySnapshot> _pendingStream = FirebaseFirestore.instance
+        .collection('power_usages')
+        .where('status', isEqualTo: 'processing')
+        .snapshots();
+
     return Scaffold(
       backgroundColor: sandBg,
       appBar: AppBar(
@@ -262,21 +254,34 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
           borderRadius: BorderRadius.vertical(bottom: Radius.circular(25)),
         ),
       ),
-      body: RefreshIndicator(
-        onRefresh: _fetchPendingInvoices,
-        color: vkuOrange,
-        child: isLoading
-            ? const Center(child: CircularProgressIndicator(color: vkuOrange))
-            : pendingInvoices.isEmpty
-            ? _buildEmptyState()
-            : ListView.builder(
-          padding: const EdgeInsets.all(20),
-          itemCount: pendingInvoices.length,
-          itemBuilder: (context, index) {
-            final item = pendingInvoices[index];
-            return _buildInvoiceCard(item);
-          },
-        ),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _pendingStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const Center(child: Text("Lỗi tải dữ liệu biên lai đám mây."));
+          }
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator(color: vkuOrange));
+          }
+
+          // Phân tách dữ liệu tài liệu Firestore sang List Map
+          List<dynamic> pendingInvoices = snapshot.data!.docs.map((doc) {
+            Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+            data['id'] = doc.id; // Lưu document ID để thực hiện lệnh update
+            return data;
+          }).toList();
+
+          return pendingInvoices.isEmpty
+              ? _buildEmptyState()
+              : ListView.builder(
+            padding: const EdgeInsets.all(20),
+            physics: const BouncingScrollPhysics(),
+            itemCount: pendingInvoices.length,
+            itemBuilder: (context, index) {
+              return _buildInvoiceCard(pendingInvoices[index]);
+            },
+          );
+        },
       ),
     );
   }
@@ -328,7 +333,7 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
                   children: [
                     Text("Phòng ${item['room_id']}",
                         style: const TextStyle(fontWeight: FontWeight.w900, color: vkuBlue, fontSize: 15)),
-                    Text("Tháng ${item['billing_month']}/${item['billing_year']}",
+                    Text(item['created_at'] != null ? "Ngày chốt: ${item['created_at'].toString().substring(0, 10)}" : "Hóa đơn KTX",
                         style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w500)),
                   ],
                 ),
@@ -336,7 +341,7 @@ class _AdminVerifyPaymentPageState extends State<AdminVerifyPaymentPage> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text("${_formatMoney(item['amount'])}",
+                  Text(_formatMoney(item['amount']),
                       style: const TextStyle(fontWeight: FontWeight.w900, color: vkuOrange, fontSize: 15)),
                   const Text("VNĐ", style: TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
                 ],

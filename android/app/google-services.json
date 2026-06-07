@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "617719664520",
+    "project_id": "dacs3-444a9",
+    "storage_bucket": "dacs3-444a9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:617719664520:android:a6f3bbdf5a8f088d18b43d",
+        "android_client_info": {
+          "package_name": "com.example.smart_dorm_vku_dacs3"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDjGCqDaqyNBne-j7tkJQ8XuMHCBXPQDpc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,26 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Đồng bộ duy nhất qua Firestore
 import '../maketplace/add_product_page.dart';
 import '../maketplace/edit_product_page.dart';
 import '../maketplace/product_detail_page.dart';
 
 class MarketplacePage extends StatefulWidget {
-  final String userId;
+  final String userId; // Nhận Mã sinh viên (username) luân chuyển từ LoginPage -> HomePage sang
   final String role;
 
   const MarketplacePage({super.key, required this.userId, required this.role});
-
-  static List<dynamic>? cachedProducts;
 
   @override
   State<MarketplacePage> createState() => _MarketplacePageState();
 }
 
 class _MarketplacePageState extends State<MarketplacePage> {
-  List<dynamic> products = MarketplacePage.cachedProducts ?? [];
-  bool isLoading = MarketplacePage.cachedProducts == null;
-
   static const vkuBlue = Color(0xFF002266);
   static const vkuOrange = Color(0xFFFF8C00);
   static const sandBg = Color(0xFFF5E1C5);
@@ -31,65 +25,50 @@ class _MarketplacePageState extends State<MarketplacePage> {
   bool get isAdmin => widget.role == 'admin';
 
   @override
-  void initState() {
-    super.initState();
-    fetchProducts();
-  }
-
-  Future<void> fetchProducts() async {
-    if (products.isEmpty) setState(() => isLoading = true);
-
-    try {
-      final response = await http.get(Uri.parse("http://10.60.56.48/dacs3/get_products.php"))
-          .timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final dynamic decodedData = jsonDecode(response.body);
-        List<dynamic> newList = [];
-
-        if (decodedData is List) {
-          newList = decodedData;
-        } else if (decodedData is Map && decodedData.containsKey('data')) {
-          newList = decodedData['data'];
-        }
-
-        if (!mounted) return;
-
-        // Chỉ setState nếu dữ liệu thực sự thay đổi để giữ 120 FPS
-        if (newList.length != products.length || newList.toString() != products.toString()) {
-          setState(() {
-            products = newList;
-            MarketplacePage.cachedProducts = products;
-            isLoading = false;
-          });
-        } else {
-          setState(() => isLoading = false);
-        }
-      }
-    } catch (e) {
-      if (mounted) setState(() => isLoading = false);
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
+    // TẠO LUỒNG LẮNG NGHE DỮ LIỆU CHỢ THỜI GIAN THỰC (REALTIME STREAM)
+    // Sắp xếp các món đồ mới đăng lên trên đầu tiên dựa vào created_at
+    final Stream<QuerySnapshot> _productStream = FirebaseFirestore.instance
+        .collection('marketplace')
+        .orderBy('created_at', descending: true)
+        .snapshots();
+
     return Scaffold(
       backgroundColor: sandBg,
       body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: fetchProducts,
-          color: vkuOrange,
-          child: CustomScrollView(
-            // Vật lý cuộn 120Hz
-            physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
-            cacheExtent: 1500, // Tải trước các card ở dưới 1.5 màn hình
-            slivers: [
-              _buildSliverAppBar(),
+        child: StreamBuilder<QuerySnapshot>(
+          stream: _productStream,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return const Center(child: Text("Lỗi tải dữ liệu chợ sinh viên."));
+            }
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator(color: vkuBlue));
+            }
 
-              if (isLoading && products.isEmpty)
-                const SliverFillRemaining(child: Center(child: CircularProgressIndicator(color: vkuBlue)))
-              else
-                SliverPadding(
+            // Chuyển đổi toàn bộ tài liệu bốc từ bảng Firestore sang danh sách List để lặp vòng lặp
+            List<dynamic> products = snapshot.data!.docs.map((doc) {
+              Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+              data['id'] = doc.id; // Lưu lại ID bài đăng hàng hóa để phục vụ chỉnh sửa hoặc xoá bài
+              return data;
+            }).toList();
+
+            return CustomScrollView(
+              physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+              cacheExtent: 1500,
+              slivers: [
+                _buildSliverAppBar(),
+
+                products.isEmpty
+                    ? const SliverFillRemaining(
+                  child: Center(
+                    child: Text(
+                      "Chợ KTX hiện tại chưa có mặt hàng nào.",
+                      style: TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                )
+                    : SliverPadding(
                   padding: const EdgeInsets.all(15),
                   sliver: SliverGrid(
                     gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -104,8 +83,9 @@ class _MarketplacePageState extends State<MarketplacePage> {
                     ),
                   ),
                 ),
-            ],
-          ),
+              ],
+            );
+          },
         ),
       ),
       floatingActionButton: isAdmin ? _buildFab() : null,
@@ -116,19 +96,12 @@ class _MarketplacePageState extends State<MarketplacePage> {
     return SliverToBoxAdapter(
       child: Container(
         padding: const EdgeInsets.fromLTRB(10, 20, 10, 10),
-        child: Stack(
+        child: const Stack(
           alignment: Alignment.center,
           children: [
-            const Text(
+            Text(
               "CHỢ SINH VIÊN VKU",
               style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 1.2),
-            ),
-            Positioned(
-              right: 10,
-              child: IconButton(
-                icon: const Icon(Icons.refresh_rounded, color: vkuBlue, size: 22),
-                onPressed: fetchProducts,
-              ),
             ),
           ],
         ),
@@ -137,19 +110,18 @@ class _MarketplacePageState extends State<MarketplacePage> {
   }
 
   Widget _buildOptimizedProductItem(dynamic item) {
-    String imageUrl = "http://10.60.56.48/dacs3/uploads/${item['image_url']}";
+    String imageUrl = item['image_url'] ?? "";
 
-    // RepaintBoundary: Cô lập pixel vẽ, chìa khóa của sự mượt mà
     return RepaintBoundary(
       child: InkWell(
-        onTap: () async {
-          bool? refresh = await Navigator.push(
+        onTap: () {
+          // Nếu là admin thì đẩy thẳng qua trang cấu hình Sửa/Xoá, nếu là sinh viên thì xem Chi tiết mặt hàng
+          Navigator.push(
             context,
             MaterialPageRoute(
                 builder: (context) => isAdmin ? EditProductPage(product: item) : ProductDetailPage(product: item)
             ),
           );
-          if (refresh == true) fetchProducts();
         },
         borderRadius: BorderRadius.circular(24),
         child: Container(
@@ -164,13 +136,19 @@ class _MarketplacePageState extends State<MarketplacePage> {
               Expanded(
                 child: ClipRRect(
                   borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                  child: Image.network(
+                  child: imageUrl.startsWith('http')
+                      ? Image.network(
                     imageUrl,
                     fit: BoxFit.cover,
                     width: double.infinity,
-                    cacheWidth: 350, // Ép ảnh nhỏ lại trong RAM (Rất quan trọng)
-                    filterQuality: FilterQuality.low, // Tăng tốc độ render khi cuộn
+                    cacheWidth: 350,
+                    filterQuality: FilterQuality.low,
                     errorBuilder: (c, e, s) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image)),
+                  )
+                      : Container(
+                    color: Colors.grey[200],
+                    width: double.infinity,
+                    child: const Icon(Icons.image_not_supported_rounded, color: marketAccent),
                   ),
                 ),
               ),
@@ -190,7 +168,8 @@ class _MarketplacePageState extends State<MarketplacePage> {
                       children: [
                         const Icon(Icons.person_pin_circle_rounded, size: 10, color: marketAccent),
                         const SizedBox(width: 4),
-                        Expanded(child: Text(item['fullname'] ?? "Ẩn danh",
+                        // ĐỒNG BỘ: Hiển thị Họ tên người đăng hoặc Mã sinh viên nếu trống trường dữ liệu
+                        Expanded(child: Text(item['fullname'] ?? item['username'] ?? "Sinh viên VKU",
                             style: const TextStyle(fontSize: 9, color: Colors.blueGrey, fontWeight: FontWeight.w600), maxLines: 1)),
                       ],
                     ),
@@ -208,11 +187,11 @@ class _MarketplacePageState extends State<MarketplacePage> {
     return FloatingActionButton(
       backgroundColor: vkuBlue,
       elevation: 8,
-      onPressed: () async {
-        bool? refresh = await Navigator.push(context, MaterialPageRoute(
+      onPressed: () {
+        Navigator.push(context, MaterialPageRoute(
+          // Truyền Mã sinh viên (username) vào form AddProductPage để lưu cấu trúc dòng chuẩn xác
           builder: (context) => AddProductPage(userId: widget.userId),
         ));
-        if (refresh == true) fetchProducts();
       },
       child: const Icon(Icons.add_photo_alternate_rounded, color: Colors.white),
     );

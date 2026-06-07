@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Đưa toàn bộ luồng quản lý lên Firestore
 
 class StudentDetailAdminPage extends StatefulWidget {
-  final dynamic student;
+  final dynamic student; // Bản ghi thông tin sinh viên được truyền từ danh sách Admin sang
   const StudentDetailAdminPage({super.key, required this.student});
 
   @override
@@ -33,6 +32,9 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
     "Tuần 04": false,
   };
 
+  // Lấy ra mã định danh sinh viên (username/MSSV) làm khóa liên kết chính
+  String get studentMssv => widget.student['username']?.toString() ?? "";
+
   @override
   void initState() {
     super.initState();
@@ -40,117 +42,133 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
     selectedMonth = "Tháng ${now.month < 10 ? '0' : ''}${now.month}";
     selectedYear = years.contains(now.year.toString()) ? now.year.toString() : "2026";
 
-    if (widget.student != null) {
-      _fetchStatus();
+    if (studentMssv.isNotEmpty) {
+      _fetchStatusFromCloud();
     }
   }
 
-  Future<void> _fetchStatus() async {
+  // --- LOGIC MỚI: BỐC TRẠNG THÁI HỌC PHÍ VÀ ĐIỂM DANH TỪ FIRESTORE ---
+  Future<void> _fetchStatusFromCloud() async {
     if (!mounted) return;
     setState(() => isLoading = true);
     try {
-      int monthInt = int.parse(selectedMonth.replaceAll(RegExp(r'[^0-9]'), ''));
-      final response = await http.get(
-        Uri.parse("http://10.60.56.48/dacs3/get_student_status.php?user_id=${widget.student['user_id']}&month=$monthInt&year=$selectedYear"),
-      );
+      // Định danh document động theo cấu trúc: MSSV_Thang_Nam
+      String docId = "${studentMssv}_${selectedMonth}_$selectedYear";
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
+      DocumentSnapshot statusDoc = await FirebaseFirestore.instance
+          .collection('room_statuses')
+          .doc(docId)
+          .get();
+
+      if (statusDoc.exists) {
+        final data = statusDoc.data() as Map<String, dynamic>;
         setState(() {
-          isPaid = data['is_paid'] == 1;
-          blueSundayStatus["Tuần 01"] = data['week1'] == 1;
-          blueSundayStatus["Tuần 02"] = data['week2'] == 1;
-          blueSundayStatus["Tuần 03"] = data['week3'] == 1;
-          blueSundayStatus["Tuần 04"] = data['week4'] == 1;
+          isPaid = data['is_paid'] == true || data['is_paid'].toString() == "1";
+          blueSundayStatus["Tuần 01"] = data['week1'] == true || data['week1'].toString() == "1";
+          blueSundayStatus["Tuần 02"] = data['week2'] == true || data['week2'].toString() == "1";
+          blueSundayStatus["Tuần 03"] = data['week3'] == true || data['week3'].toString() == "1";
+          blueSundayStatus["Tuần 04"] = data['week4'] == true || data['week4'].toString() == "1";
+        });
+      } else {
+        // Nếu tháng này chưa có bản ghi dữ liệu, reset toàn bộ về trạng thái trống ban đầu
+        setState(() {
+          isPaid = false;
+          blueSundayStatus.updateAll((key, value) => false);
         });
       }
     } catch (e) {
-      debugPrint("Lỗi tải: $e");
+      debugPrint("Lỗi bốc dữ liệu trạng thái cư dân: $e");
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
   }
 
+  // --- LOGIC MỚI: LƯU TẤT CẢ TRẠNG THÁI CẬP NHẬT LÊN FIRESTORE ---
   Future<void> _saveAllStatus() async {
+    if (studentMssv.isEmpty) return;
     setState(() => isLoading = true);
     try {
-      final response = await http.post(
-        Uri.parse("http://10.60.56.48/dacs3/update_student_all_status.php"),
-        body: {
-          "user_id": widget.student['user_id'].toString(),
-          "month": selectedMonth,
-          "year": selectedYear,
-          "status": isPaid ? "1" : "0",
-          "week1": blueSundayStatus["Tuần 01"]! ? "1" : "0",
-          "week2": blueSundayStatus["Tuần 02"]! ? "1" : "0",
-          "week3": blueSundayStatus["Tuần 03"]! ? "1" : "0",
-          "week4": blueSundayStatus["Tuần 04"]! ? "1" : "0",
-        },
-      );
+      String docId = "${studentMssv}_${selectedMonth}_$selectedYear";
 
-      if (response.statusCode == 200) {
+      // Sử dụng .set với tính năng merge: true để ghi đè hoặc tạo mới nếu chưa tồn tại
+      await FirebaseFirestore.instance
+          .collection('room_statuses')
+          .doc(docId)
+          .set({
+        "username": studentMssv,
+        "fullname": widget.student['fullname'] ?? "N/A",
+        "room_id": widget.student['room_id'] ?? "Chưa rõ",
+        "month": selectedMonth,
+        "year": selectedYear,
+        "is_paid": isPaid,
+        "week1": blueSundayStatus["Tuần 01"],
+        "week2": blueSundayStatus["Tuần 02"],
+        "week3": blueSundayStatus["Tuần 03"],
+        "week4": blueSundayStatus["Tuần 04"],
+        "updated_at": DateTime.now().toString().substring(0, 19),
+      }, SetOptions(merge: true));
+
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("✅ Đã lưu thay đổi thành công!"), backgroundColor: Colors.green),
+          const SnackBar(content: Text("✅ Đã lưu thay đổi tình trạng cư trú lên hệ thống đám mây!"), backgroundColor: Colors.green),
         );
       }
     } catch (e) {
-      debugPrint("Lỗi lưu: $e");
+      debugPrint("Lỗi cập nhật Firestore: $e");
     } finally {
-      setState(() => isLoading = false);
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
-  // --- HÀM GỬI NHẮC NHỞ NHANH (ĐÃ SỬA) ---
+  // --- LOGIC MỚI: PHÁT THÔNG BÁO NHẮC NHỞ REALTIME SANG ĐIỆN THOẠI SINH VIÊN ---
   Future<void> _sendNotification() async {
-    String title = "NHẮC NHỞ TỪ BAN QUẢN LÝ";
+    if (studentMssv.isEmpty) return;
+    String title = "NHẮC NHỞ TỪ BAN QUẢN LÝ KTX";
     String content = "";
 
-    // Tự động soạn nội dung dựa trên trạng thái hiện tại trên màn hình
     if (!isPaid) {
-      content = "Bạn chưa hoàn tất học phí nội trú $selectedMonth. Vui lòng thanh toán sớm để tránh bị khóa dịch vụ điện!";
+      content = "Bạn chưa hoàn tất học phí nội trú $selectedMonth. Vui lòng thanh toán sớm để tránh bị khóa các dịch vụ tiện ích!";
     } else {
       int vangCount = blueSundayStatus.values.where((v) => v == false).length;
-    if (vangCount > 0) {
-    content = "Hệ thống ghi nhận bạn vắng $vangCount buổi sinh hoạt trong tháng này. Hãy chú ý đi đầy đủ hơn nhé!";
-    } else {
-    content = "Cảm ơn bạn đã hoàn thành tốt các nghĩa vụ nội trú trong $selectedMonth!";
-    }
+      if (vangCount > 0) {
+        content = "Hệ thống ghi nhận bạn vắng $vangCount buổi sinh hoạt Chủ nhật Xanh trong tháng này. Hãy chú ý đi đầy đủ hơn nhé!";
+      } else {
+        content = "Cảm ơn bạn đã hoàn thành xuất sắc các hoạt động và nghĩa vụ nội trú trong $selectedMonth!";
+      }
     }
 
     try {
-    setState(() => isLoading = true);
-    final response = await http.post(
-    Uri.parse("http://10.60.56.48/dacs3/manage_notifications.php"),
-    body: {
-    "user_id": widget.student['user_id'].toString(),
-    "title": title,
-    "content": content,
-    "type": isPaid ? "info" : "warning",
-    },
-    );
+      setState(() => isLoading = true);
 
-    if (response.statusCode == 200) {
-    ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-    content: Text("🚀 Gửi thông báo thành công: $content"),
-    backgroundColor: vkuBlue,
-    behavior: SnackBarBehavior.floating,
-    ),
-    );
-    }
+      // Thêm trực tiếp thông báo mới vào bảng 'notifications' để máy sinh viên hứng realtime
+      await FirebaseFirestore.instance.collection('notifications').add({
+        "username": studentMssv, // Định tuyến thông báo chính xác theo Mã sinh viên
+        "title": title,
+        "content": content,
+        "is_read": false, // Mặc định tin nhắn mới gửi ở trạng thái chưa đọc
+        "created_at": DateTime.now().toString().substring(0, 19),
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("🚀 Đã bắn thông báo Realtime thành công: $content"),
+            backgroundColor: vkuBlue,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     } catch (e) {
-    debugPrint("Lỗi gửi: $e");
+      debugPrint("Lỗi bắn thông báo nhắc nhở: $e");
     } finally {
-    setState(() => isLoading = false);
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    String? avatarPath = widget.student['avatar_url'];
-    String fullAvatarUrl = (avatarPath != null && avatarPath.isNotEmpty)
-        ? (avatarPath.startsWith('http') ? avatarPath : "http://10.60.56.48/dacs3/uploads/$avatarPath")
-        : "";
+    // Đón link URL online lưu trực tiếp từ Firebase mây
+    String fullAvatarUrl = widget.student['avatar_url']?.toString() ?? "";
 
     return Scaffold(
       backgroundColor: sandBg,
@@ -164,7 +182,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
               delegate: SliverChildListDelegate([
                 _buildSectionTitle("THÔNG TIN CƯ TRÚ"),
                 _buildCardContainer([
-                  _buildProfileRow(Icons.meeting_room_rounded, "Vị trí phòng", "Phòng ${widget.student['room_id']}"),
+                  _buildProfileRow(Icons.meeting_room_rounded, "Vị trí phòng", "Phòng ${widget.student['room_id'] ?? 'Chưa rõ'}"),
                   const Divider(height: 25, thickness: 0.5),
                   _buildProfileRow(Icons.home_work_rounded, "Khu vực", "Ký túc xá VKU"),
                 ]),
@@ -176,11 +194,14 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
                   Row(
                     children: [
                       Expanded(child: _buildDropdownLabel("Tháng", selectedMonth, months, (v) {
-                        if (v != null) { setState(() => selectedMonth = v); _fetchStatus(); }
+                        if (v != null) { setState(() => selectedMonth = v); _fetchStatusFromCloud(); }
                       })),
                       const SizedBox(width: 15),
                       Expanded(child: _buildDropdownLabel("Năm", selectedYear, years, (v) {
-                        if (v != null) { setState(() => selectedYear = v); _fetchStatus(); }
+                        if (v != null) {
+                          setState(() => selectedYear = v);
+                          _fetchStatusFromCloud(); // Đã sửa tên hàm cho đúng chuẩn
+                        }
                       })),
                     ],
                   ),
@@ -212,7 +233,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
                 ),
                 const SizedBox(height: 15),
                 _buildActionButton(
-                  onPressed: isLoading ? null : _sendNotification, // GỌI HÀM MỚI
+                  onPressed: isLoading ? null : _sendNotification,
                   icon: Icons.notifications_active_rounded,
                   label: "GỬI NHẮC NHỞ NHANH",
                   bgColor: vkuOrange,
@@ -227,7 +248,6 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
     );
   }
 
-  // --- CÁC WIDGET PHỤ TRỢ GIỮ NGUYÊN ---
   Widget _buildSliverAppBar(String url) {
     return SliverAppBar(
       expandedHeight: 280,
@@ -245,15 +265,15 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
                   radius: 54, backgroundColor: vkuBlue,
                   child: CircleAvatar(
                     radius: 50, backgroundColor: cardBg,
-                    backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
-                    child: url.isEmpty ? const Icon(Icons.person, size: 50, color: vkuBlue) : null,
+                    backgroundImage: (url.isNotEmpty && url.startsWith('http')) ? NetworkImage(url) : null,
+                    child: (url.isEmpty || !url.startsWith('http')) ? const Icon(Icons.person, size: 50, color: vkuBlue) : null,
                   ),
                 ),
               ),
               const SizedBox(height: 15),
               Text((widget.student['fullname'] ?? "N/A").toUpperCase(),
                   style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900)),
-              Text(widget.student['student_code'] ?? "CHƯA CẬP NHẬT",
+              Text(widget.student['username'] ?? "CHƯA CẬP NHẬT",
                   style: const TextStyle(color: vkuOrange, fontSize: 12, fontWeight: FontWeight.bold)),
             ],
           ),

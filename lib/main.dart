@@ -1,9 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart'; // 1. Thêm import Firebase Core
+import 'firebase_options.dart'; // 2. Thêm import cấu hình Firebase Options
 import 'common/login_page.dart';
-import 'common/home_page.dart'; // Nhớ tạo file này nếu chưa có
-// import 'register_page.dart'; // Import thêm các trang khác của bạn
+import 'common/home_page.dart';
 
-void main() {
+void main() async {
+  // 3. Đảm bảo các dịch vụ native của Flutter được nạp đầy đủ trước
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 4. Khởi tạo cổng kết nối trực tiếp đến Firebase Server
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
   runApp(const VKUSmartDormApp());
 }
 
@@ -32,19 +41,7 @@ class VKUSmartDormApp extends StatelessWidget {
         fontFamily: 'Roboto',
       ),
 
-      // 1. Trang sẽ hiện lên đầu tiên khi mở App
-      initialRoute: '/login',
-
-      // 2. Danh mục các trang trong App (Cực kỳ quan trọng để Đăng xuất chạy được)
-      routes: {
-        '/login': (context) => const LoginPage(),
-        // '/register': (context) => const RegisterPage(),
-        // '/home': (context) => const HomePage(user: {}),
-        // Lưu ý: Nếu HomePage của bạn cần truyền biến 'user',
-        // chú sẽ hướng dẫn cách truyền data qua Route sau nếu bạn cần.
-      },
-
-      // Cách dự phòng nếu bạn chưa quen dùng Named Routes cho các trang có tham số:
+      // Trang khởi đầu mặc định
       home: const LoginPage(),
     );
   }

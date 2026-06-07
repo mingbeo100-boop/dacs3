@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để update trạng thái hóa đơn
+import 'package:firebase_storage/firebase_storage.dart'; // Sử dụng Storage để lưu trữ ảnh biên lai online
 
 class PaymentPage extends StatefulWidget {
   final double amount;
   final String roomName;
   final int month;
-  // QUAN TRỌNG: Thêm invoiceId để PHP biết chính xác dòng nào cần Update
-  final String invoiceId;
+  final String invoiceId; // ID của document hóa đơn tiền điện nằm trong collection 'power_usages'
 
   const PaymentPage({
     super.key,
@@ -46,7 +45,7 @@ class _PaymentPageState extends State<PaymentPage> {
     }
   }
 
-  // --- HÀM GỬI DỮ LIỆU ĐÃ SỬA LỖI ---
+  // --- LOGIC MỚI: TẢI BIÊN LAI LÊN STORAGE VÀ CẬP NHẬT TRẠNG THÁI HOÁ ĐƠN LÊN FIRESTORE ---
   Future<void> _submitPayment() async {
     if (_image == null) {
       _showSnackBar("Vui lòng đính kèm ảnh biên lai!", Colors.red);
@@ -56,42 +55,35 @@ class _PaymentPageState extends State<PaymentPage> {
     setState(() => isSubmitting = true);
 
     try {
-      // 1. Kiểm tra lại IP máy tính của ông (quan trọng nhất)
-      var uri = Uri.parse("http://10.60.56.48/dacs3/upload_receipt.php");
-      var request = http.MultipartRequest('POST', uri);
+      String receiptUrl = "";
 
-      // 2. Gửi các field khớp với file PHP đã viết
-      request.fields['invoice_id'] = widget.invoiceId; // Dùng ID để update chính xác
-      request.fields['room_id'] = widget.roomName;
-      request.fields['month'] = widget.month.toString();
+      // 1. Tải ảnh biên lai lên Firebase Storage
+      String fileName = "receipt_${widget.invoiceId}_${DateTime.now().millisecondsSinceEpoch}.jpg";
+      Reference storageRef = FirebaseStorage.instance.ref().child("receipts/$fileName");
 
-      // Đính kèm file ảnh
-      request.files.add(await http.MultipartFile.fromPath(
-          'receipt_image',
-          _image!.path
-      ));
+      UploadTask uploadTask = storageRef.putFile(_image!);
+      TaskSnapshot snapshot = await uploadTask;
+      receiptUrl = await snapshot.ref.getDownloadURL(); // Lấy đường dẫn link ảnh online từ Google Server
 
-      // 3. Thực hiện gửi
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
+      // 2. Cập nhật trực tiếp vào document hoá đơn cụ thể trong collection 'power_usages' (hoặc collection quản lý hóa đơn của bạn)
+      await FirebaseFirestore.instance
+          .collection('power_usages')
+          .doc(widget.invoiceId)
+          .update({
+        "receipt_image": receiptUrl,     // Lưu link ảnh minh chứng để Admin vào kiểm tra
+        "status": "processing",           // Chuyển trạng thái sang Đang xử lý / Chờ duyệt (processing)
+        "submitted_at": DateTime.now().toString().substring(0, 19), // Ghi lại thời gian nộp minh chứng
+      });
 
-      // Debug để ông xem lỗi trong Console của VS Code
-      debugPrint("Server Response: ${response.body}");
+      _showSnackBar("Gửi minh chứng chuyển khoản thành công! Chờ Admin duyệt.", Colors.green);
 
-      if (response.statusCode == 200) {
-        final result = jsonDecode(response.body);
-        if (result['success'] == true) {
-          _showSnackBar("Gửi minh chứng thành công! Chờ Admin duyệt.", Colors.green);
-          if (mounted) Navigator.pop(context, true); // Trả về true để reload trang chủ
-        } else {
-          _showSnackBar(result['message'] ?? "Lỗi từ Server", Colors.red);
-        }
-      } else {
-        _showSnackBar("Lỗi kết nối Server: ${response.statusCode}", Colors.red);
+      if (mounted) {
+        Navigator.pop(context, true); // Trả về true để màn hình trước tự động reload trạng thái
       }
+
     } catch (e) {
-      debugPrint("Lỗi nghiêm trọng: $e");
-      _showSnackBar("Không thể kết nối đến máy chủ!", Colors.red);
+      debugPrint("Lỗi thanh toán đám mây: $e");
+      _showSnackBar("Lỗi hệ thống: Không thể gửi minh chứng!", Colors.red);
     } finally {
       if (mounted) setState(() => isSubmitting = false);
     }
@@ -141,7 +133,7 @@ class _PaymentPageState extends State<PaymentPage> {
         children: [
           const Text("QUÉT MÃ ĐỂ CHUYỂN KHOẢN", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 15),
-          Image.network(url, height: 350, fit: BoxFit.contain),
+          Image.network(url, height: 350, fit: BoxFit.contain, errorBuilder: (c, e, s) => Container(height: 350, color: Colors.grey[100], child: const Icon(Icons.broken_image, size: 50, color: Colors.grey))),
           const Divider(height: 30),
           Text("${_formatPrice(widget.amount)} VNĐ", style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: vkuBlue)),
           const SizedBox(height: 10),

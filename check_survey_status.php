@@ -1,18 +1,16 @@
-<?php
-include_once 'db_config.php';
-header('Content-Type: application/json; charset=utf-8');
+// --- HÀM KIỂM TRA KHẢO SÁT CHUYỂN SANG FIRESTORE (THAY THẾ FILE PHP) ---
+Future<bool> checkStudentSurvey(String userId) async {
+  try {
+    // Truy vấn thẳng vào collection 'student_preferences' tìm doc có user_id khớp
+    final snapshot = await FirebaseFirestore.instance
+        .collection('student_preferences')
+        .where('user_id', isEqualTo: userId)
+        .get();
 
-$user_id = isset($_GET['user_id']) ? intval($_GET['user_id']) : 0;
-
-try {
-    // Đếm xem trong bảng thói quen đã có dòng nào của user này chưa
-    $stmt = $conn->prepare("SELECT COUNT(*) FROM student_preferences WHERE user_id = :id");
-    $stmt->execute(['id' => $user_id]);
-    $count = $stmt->fetchColumn();
-
-    // Nếu count > 0 nghĩa là đã làm khảo sát rồi
-    echo json_encode(["has_survey" => ($count > 0)]);
-} catch (PDOException $e) {
-    echo json_encode(["has_survey" => false, "error" => $e->getMessage()]);
+    // Nếu snapshot không rỗng (docs.isNotEmpty) tức là đã làm khảo sát rồi -> trả về true
+    return snapshot.docs.isNotEmpty;
+  } catch (e) {
+    debugPrint("Lỗi check khảo sát mây: $e");
+    return false; // Dự phòng lỗi thì coi như chưa làm
+  }
 }
-?>

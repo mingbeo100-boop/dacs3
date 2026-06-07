@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Chỉ cần dùng thư viện Firestore
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -11,28 +10,40 @@ class RegisterPage extends StatefulWidget {
 
 class _RegisterPageState extends State<RegisterPage> {
   final _nameController = TextEditingController();
-  final _usernameController = TextEditingController();
+  final _usernameController = TextEditingController(); // Ô nhập Mã sinh viên (VD: 24ITB103)
   final _roomController = TextEditingController();
   final _passController = TextEditingController();
 
   bool _isLoading = false;
   bool _isObscure = true;
 
-  // --- HỆ MÀU ĐỒNG BỘ (LÌ & SANG) ---
-  static const vkuBlue = Color(0xFF002266);      // Xanh dương đậm
-  static const sandBg = Color(0xFFF5E1C5);       // Nền màu Cát (Sand)
-  static const cardBg = Color(0xFFFFF8F0);       // Màu kem nhạt cho ô input
-  static const colorAccent = Color(0xFFD4A373);  // Nâu gỗ Pastel từ trang Home
+  // --- HỆ MÀU ĐỒNG BỘ VỚI LOGIN/HOME (LÌ & SANG) ---
+  static const vkuBlue = Color(0xFF002266);
+  static const sandBg = Color(0xFFF5E1C5);
+  static const cardBg = Color(0xFFFFF8F0);
+  static const colorAccent = Color(0xFFD4A373);
 
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _usernameController.dispose();
+    _roomController.dispose();
+    _passController.dispose();
+    super.dispose();
+  }
+
+  // --- LOGIC MỚI: ĐĂNG KÝ TRỰC TIẾP VÀO BẢNG FIRESTORE THUỒN ---
   Future<void> _register() async {
-    if (_nameController.text.isEmpty ||
-        _usernameController.text.isEmpty ||
-        _roomController.text.isEmpty ||
-        _passController.text.isEmpty) {
+    final String fullname = _nameController.text.trim();
+    final String username = _usernameController.text.trim().toUpperCase(); // Ép chữ in hoa cho chuẩn MSSV
+    final String roomId = _roomController.text.trim();
+    final String password = _passController.text.trim();
+
+    if (fullname.isEmpty || username.isEmpty || roomId.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Vui lòng điền đầy đủ các thông tin!"),
-          backgroundColor: colorAccent,
+          backgroundColor: Colors.redAccent,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -42,46 +53,63 @@ class _RegisterPageState extends State<RegisterPage> {
     setState(() => _isLoading = true);
 
     try {
-      // CẬP NHẬT IP CỦA NHẬT LONG: 192.168.1.14
-      final response = await http.post(
-        Uri.parse("http://10.60.56.48/dacs3/register.php"),
-        body: {
-          "fullname": _nameController.text.trim(),
-          "username": _usernameController.text.trim(),
-          "room": _roomController.text.trim(),
-          "password": _passController.text.trim(),
-        },
-      );
+      // Bước 1: Kiểm tra xem Mã sinh viên này đã tồn tại trong bảng 'users' chưa
+      DocumentSnapshot userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(username) // Check trực tiếp bằng ID tài liệu là Mã sinh viên
+          .get();
 
-      final data = jsonDecode(response.body);
-
-      if (data['status'] == 'success') {
+      if (userDoc.exists) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("🎉 Đăng ký thành công! Mời bạn đăng nhập."),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        Navigator.pop(context);
-      } else {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(data['message']),
+            content: Text("❌ Mã sinh viên này đã được đăng ký trên hệ thống!"),
             backgroundColor: Colors.redAccent,
             behavior: SnackBarBehavior.floating,
           ),
         );
+        return;
       }
+
+      // Bước 2: Tạo trực tiếp bản ghi sinh viên mới vào bảng Firestore
+      // Đặt Document ID trùng khít với Mã sinh viên để LoginPage bốc data siêu tốc
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(username)
+          .set({
+        "username": username,
+        "fullname": fullname,
+        "room_id": roomId,
+        "password": password, // Lưu trực tiếp mật khẩu vào bảng phục vụ so khớp tại ô Login
+        "role": "student",    // Mặc định phân quyền tài khoản mới là sinh viên
+        "is_paid": "0",       // Mặc định chưa đóng tiền phòng
+        "created_at": DateTime.now().toString().substring(0, 19), // Định dạng chuẩn thời gian thực
+      });
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("🎉 Đăng ký thành công! Mời bạn đăng nhập."),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      // Đăng ký xong tự động quay về trang Login
+      Navigator.pop(context);
+
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Không thể kết nối đến máy chủ 10.60.56.48!")),
+        SnackBar(
+          content: Text("Lỗi hệ thống: ${e.toString()}"),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -92,7 +120,7 @@ class _RegisterPageState extends State<RegisterPage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        iconTheme: const IconThemeData(color: vkuBlue), // Icon quay lại màu xanh đậm
+        iconTheme: const IconThemeData(color: vkuBlue),
       ),
       body: Container(
         width: double.infinity,
@@ -110,7 +138,6 @@ class _RegisterPageState extends State<RegisterPage> {
             child: Column(
               children: [
                 const SizedBox(height: 60),
-                // Logo VKU với nền Kem
                 Container(
                   padding: const EdgeInsets.all(15),
                   decoration: BoxDecoration(
@@ -118,7 +145,9 @@ class _RegisterPageState extends State<RegisterPage> {
                       shape: BoxShape.circle,
                       boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)]
                   ),
-                  child: Image.asset('assets/logo_vku.png', width: 65, height: 65),
+                  child: Image.asset('assets/logo_vku.png', width: 65, height: 65, errorBuilder: (context, error, stackTrace) {
+                    return const Icon(Icons.school, size: 65, color: vkuBlue);
+                  }),
                 ),
                 const SizedBox(height: 20),
                 const Text(
@@ -127,7 +156,6 @@ class _RegisterPageState extends State<RegisterPage> {
                 ),
                 const SizedBox(height: 30),
 
-                // Form nhập liệu màu Sand
                 Container(
                   padding: const EdgeInsets.all(25),
                   decoration: BoxDecoration(
@@ -197,7 +225,6 @@ class _RegisterPageState extends State<RegisterPage> {
   }
 }
 
-// --- WIDGET NÚT BẤM (ĐỒNG BỘ LOGIN) ---
 class RegisterButton extends StatefulWidget {
   final VoidCallback onTap;
   final String title;

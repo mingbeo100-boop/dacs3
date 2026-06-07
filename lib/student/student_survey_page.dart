@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để lưu trữ hồ sơ thói quen
 
 class StudentSurveyPage extends StatefulWidget {
-  final dynamic user;
+  final dynamic user; // Nhận cục dữ liệu sinh viên đăng nhập từ HomePage sang
   const StudentSurveyPage({super.key, required this.user});
 
   @override
@@ -11,6 +10,7 @@ class StudentSurveyPage extends StatefulWidget {
 }
 
 class _StudentSurveyPageState extends State<StudentSurveyPage> {
+  // --- HỆ MÀU SMART DORM ---
   static const vkuBlue = Color(0xFF072C6C);
   static const vkuOrange = Color(0xFFFF8C00);
   static const sandBg = Color(0xFFF5E1C5);
@@ -18,7 +18,7 @@ class _StudentSurveyPageState extends State<StudentSurveyPage> {
 
   bool isSubmitting = false;
 
-  // Khởi tạo đầy đủ các cột theo bảng SQL của ông để tránh NULL
+  // Khảo sát thói quen mặc định
   Map<String, int> preferences = {
     "sleep_time": 2,     // 1: Sớm, 2: Vừa, 3: Khuya
     "wakeup_time": 2,    // 1: Sớm, 2: Vừa, 3: Muộn
@@ -31,36 +31,84 @@ class _StudentSurveyPageState extends State<StudentSurveyPage> {
     "social_index": 2,   // 1: Hướng nội, 2: Vừa, 3: Hướng ngoại
   };
 
-  Future<void> _submitSurvey() async {
-    setState(() => isSubmitting = true);
-    try {
-      final response = await http.post(
-        Uri.parse("http://10.60.56.48/dacs3/save_preferences.php"),
-        body: {
-          "user_id": widget.user['id'].toString(),
-          "sleep_time": preferences["sleep_time"].toString(),
-          "wakeup_time": preferences["wakeup_time"].toString(),
-          "study_habit": preferences["study_habit"].toString(),
-          "tech_stack": preferences["tech_stack"].toString(),
-          "cleanliness": preferences["cleanliness"].toString(),
-          "smoking": preferences["smoking"].toString(),
-          "gaming_level": preferences["gaming_level"].toString(),
-          "music_volume": preferences["music_volume"].toString(),
-          "social_index": preferences["social_index"].toString(),
-        },
-      );
+  @override
+  void initState() {
+    super.initState();
+    _loadExistingPreferences();
+  }
 
-      if (response.statusCode == 200) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("✅ Đã cập nhật hồ sơ thói quen!"), backgroundColor: Colors.green, behavior: SnackBarBehavior.floating),
-        );
-        Navigator.pop(context);
+  // --- TÍNH NĂNG THÊM: TỰ ĐỘNG ĐỌC LẠI KHẢO SÁT CŨ NẾU SINH VIÊN ĐÃ TỪNG LÀM ---
+  Future<void> _loadExistingPreferences() async {
+    String mssv = widget.user['username']?.toString() ?? "";
+    if (mssv.isEmpty) return;
+
+    try {
+      DocumentSnapshot prefDoc = await FirebaseFirestore.instance
+          .collection('preferences')
+          .doc(mssv)
+          .get();
+
+      if (prefDoc.exists && mounted) {
+        final data = prefDoc.data() as Map<String, dynamic>;
+        setState(() {
+          // Map lại toàn bộ các trường int đã lưu từ trước lên màn hình
+          preferences.forEach((key, value) {
+            if (data.containsKey(key)) {
+              preferences[key] = int.tryParse(data[key].toString()) ?? value;
+            }
+          });
+        });
       }
     } catch (e) {
-      debugPrint("Lỗi gửi khảo sát: $e");
+      debugPrint("Lỗi tải hồ sơ khảo sát cũ: $e");
+    }
+  }
+
+  // --- LOGIC MỚI: LƯU TẬP TRUNG KHẢO SÁT LÊN BẢNG FIRESTORE LẤY MSSV LÀM DOCUMENT ID ---
+  Future<void> _submitSurvey() async {
+    String mssv = widget.user['username']?.toString() ?? "";
+    if (mssv.isEmpty) return;
+
+    setState(() => isSubmitting = true);
+    try {
+      // Đẩy trực tiếp map preferences lên collection 'preferences', lấy ID là Mã sinh viên
+      await FirebaseFirestore.instance
+          .collection('preferences')
+          .doc(mssv)
+          .set({
+        "username": mssv,
+        "fullname": widget.user['fullname'] ?? "Sinh viên VKU",
+        "sleep_time": preferences["sleep_time"],
+        "wakeup_time": preferences["wakeup_time"],
+        "study_habit": preferences["study_habit"],
+        "tech_stack": preferences["tech_stack"],
+        "cleanliness": preferences["cleanliness"],
+        "smoking": preferences["smoking"],
+        "gaming_level": preferences["gaming_level"],
+        "music_volume": preferences["music_volume"],
+        "social_index": preferences["social_index"],
+        "updated_at": DateTime.now().toString().substring(0, 19),
+      }, SetOptions(merge: true)); // Dùng merge: true để cập nhật đè an toàn
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text("✅ Đã cập nhật hồ sơ cá tính & lối sống thành công!"),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating
+        ),
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      debugPrint("Lỗi lưu khảo sát lên mạng đám mây: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("❌ Lỗi hệ thống: $e"), backgroundColor: Colors.redAccent),
+        );
+      }
     } finally {
-      setState(() => isSubmitting = false);
+      if (mounted) setState(() => isSubmitting = false);
     }
   }
 
@@ -145,7 +193,6 @@ class _StudentSurveyPageState extends State<StudentSurveyPage> {
     );
   }
 
-  // --- UI COMPONENTS (GIỮ NGUYÊN STYLE SỔ TAY NỘI TRÚ) ---
   Widget _buildSliverAppBar() => SliverAppBar(
     pinned: true, backgroundColor: vkuBlue, elevation: 0,
     leading: IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 20)),

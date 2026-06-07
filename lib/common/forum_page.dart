@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 
@@ -16,8 +16,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
   late TabController _tabController;
   List<dynamic> _posts = [];
   bool _isPageLoading = true;
-
-  final String serverUrl = "http://10.60.56.48/dacs3";
 
   static const vkuBlue = Color(0xFF072C6C);
   static const vkuOrange = Color(0xFFFF8C00);
@@ -43,15 +41,28 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
   @override
   void dispose() {
     _tabController.dispose();
+    _titleController.dispose();
+    _contentController.dispose();
+    _priceController.dispose();
+    _commentController.dispose();
     super.dispose();
   }
 
   Future<void> _loadPosts() async {
     try {
-      final res = await http.get(Uri.parse("$serverUrl/forum_manage.php")).timeout(const Duration(seconds: 5));
-      if (res.statusCode == 200 && mounted) {
+      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+          .collection('posts')
+          .orderBy('created_at', descending: true)
+          .get()
+          .timeout(const Duration(seconds: 5));
+
+      if (mounted) {
         setState(() {
-          _posts = jsonDecode(res.body);
+          _posts = querySnapshot.docs.map((doc) {
+            Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+            data['id'] = doc.id;
+            return data;
+          }).toList();
           _isPageLoading = false;
         });
       }
@@ -67,19 +78,11 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
       body: SafeArea(
         child: Column(
           children: [
-            // 1. Header có nút back (Giống image_2cb256.png)
             _buildCustomHeader(),
-
-            // 2. Thanh chuyển đổi Tab
             _buildTabSwitcher(),
-
-            // 3. Ô "Bạn đang nghĩ gì?" đưa xuống dưới (Theo ý ông)
             _buildForumInputCard(),
-
-            // 4. Thanh tiêu đề ngăn cách có vạch cam (Giống image_2d03f9.png)
             _buildSectionTitle(_tabController.index == 0 ? "BẢN TIN SINH VIÊN" : "DANH MỤC HÀNG HÓA"),
 
-            // 5. Danh sách bài viết
             Expanded(
               child: _isPageLoading
                   ? const Center(child: CircularProgressIndicator(color: vkuOrange))
@@ -123,22 +126,21 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
 
   Widget _buildTabSwitcher() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(25, 10, 25, 10), // Tăng margin cho thoáng
-      height: 50, // Cố định chiều cao để không bị bóp méo
+      margin: const EdgeInsets.fromLTRB(25, 10, 25, 10),
+      height: 50,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.6), // Nền trắng mờ trên nền cát
+        color: Colors.white.withOpacity(0.6),
         borderRadius: BorderRadius.circular(25),
       ),
       child: TabBar(
         controller: _tabController,
         onTap: (index) => setState(() {}),
-        // --- PHẦN SỬA LỖI CHÍNH ---
         indicator: BoxDecoration(
           color: vkuBlue,
           borderRadius: BorderRadius.circular(20),
         ),
-        indicatorSize: TabBarIndicatorSize.tab, // Để nó kéo dài hết một ô tab
-        indicatorPadding: const EdgeInsets.all(4), // Tạo khoảng cách để không dính viền
+        indicatorSize: TabBarIndicatorSize.tab,
+        indicatorPadding: const EdgeInsets.all(4),
         labelColor: Colors.white,
         unselectedLabelColor: vkuBlue,
         labelStyle: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
@@ -188,7 +190,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     );
   }
 
-  // --- WIDGET NGĂN CÁCH CÓ VẠCH CAM (GIỐNG image_2d03f9.png) ---
   Widget _buildSectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(25, 5, 25, 15),
@@ -285,7 +286,7 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
                   onPressed: () => _openCommentsModal(post),
                   icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16, color: vkuBlue),
                   label: Text(
-                    (post['comment_count'] != null && post['comment_count'] != "0")
+                    (post['comment_count'] != null && post['comment_count'] != 0 && post['comment_count'] != "0")
                         ? "${post['comment_count']} Bình luận" : "Bình luận",
                     style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 11),
                   ),
@@ -300,7 +301,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     );
   }
 
-  // --- GIỮ NGUYÊN LOGIC CŨ CỦA ÔNG ---
   void _openCreatePostModal() {
     String currentType = _tabController.index == 0 ? 'confession' : 'market';
     showModalBottomSheet(
@@ -360,24 +360,44 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     );
   }
 
+  // --- ĐỒNG BỘ: GÁN TRƯỜNG USERNAME BẰNG MÃ SINH VIÊN KHI ĐĂNG BÀI MỚI ---
   Future<void> _handleCreatePost(String type) async {
-    if (_titleController.text.isEmpty || _contentController.text.isEmpty) return;
+    if (_titleController.text.trim().isEmpty || _contentController.text.trim().isEmpty) return;
     setState(() => _isSubmitting = true);
     try {
-      var request = http.MultipartRequest('POST', Uri.parse("$serverUrl/forum_manage.php"));
-      request.fields['action'] = 'add_post';
-      request.fields['user_id'] = widget.user['id'].toString();
-      request.fields['type'] = type;
-      request.fields['title'] = _titleController.text;
-      request.fields['content'] = _contentController.text;
-      request.fields['price'] = _priceController.text;
-      if (_selectedImage != null) request.files.add(await http.MultipartFile.fromPath('image', _selectedImage!.path));
-      var res = await request.send();
-      if (res.statusCode == 200 && mounted) {
-        Navigator.pop(context); _clearForm(); _loadPosts();
+      String imageUrl = "";
+
+      if (_selectedImage != null) {
+        String fileName = "forum_${DateTime.now().millisecondsSinceEpoch}.jpg";
+        Reference storageRef = FirebaseStorage.instance.ref().child("forum/$fileName");
+        UploadTask uploadTask = storageRef.putFile(_selectedImage!);
+        TaskSnapshot snapshot = await uploadTask;
+        imageUrl = await snapshot.ref.getDownloadURL();
       }
-    } catch (e) { debugPrint(e.toString()); }
-    finally { if (mounted) setState(() => _isSubmitting = false); }
+
+      await FirebaseFirestore.instance.collection('posts').add({
+        'username': widget.user['username'].toString(), // Đồng bộ dùng Mã sinh viên
+        'fullname': widget.user['fullname'] ?? "Thành viên VKU",
+        'avatar_url': widget.user['avatar_url'] ?? "",
+        'type': type,
+        'title': _titleController.text.trim(),
+        'content': _contentController.text.trim(),
+        'price': type == 'market' ? _priceController.text.trim() : "",
+        'image_url': imageUrl,
+        'comment_count': 0,
+        'created_at': DateTime.now().toString().substring(0, 19),
+      });
+
+      if (mounted) {
+        Navigator.pop(context);
+        _clearForm();
+        _loadPosts();
+      }
+    } catch (e) {
+      debugPrint("Lỗi đăng bài viết: $e");
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
   }
 
   void _openCommentsModal(dynamic post) {
@@ -395,43 +415,59 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
               const Text("BÌNH LUẬN", style: TextStyle(fontWeight: FontWeight.w900, color: vkuBlue)),
               const Divider(),
               Expanded(
-                child: FutureBuilder<http.Response>(
-                  future: http.get(Uri.parse("$serverUrl/forum_manage.php?post_id=${post['id']}")),
+                child: StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('posts')
+                      .doc(post['id'])
+                      .collection('comments')
+                      .orderBy('created_at', descending: false)
+                      .snapshots(),
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                    List<dynamic> comments = jsonDecode(snapshot.data!.body);
+
+                    var commentDocs = snapshot.data!.docs;
                     return ListView.builder(
                       padding: const EdgeInsets.all(20),
-                      itemCount: comments.length,
-                      itemBuilder: (context, index) => Container(
-                        margin: const EdgeInsets.only(bottom: 15),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const CircleAvatar(radius: 18, backgroundColor: sandBg, child: Icon(Icons.person, size: 20, color: vkuBlue)),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(18)),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(comments[index]['fullname'] ?? "Sinh viên", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: vkuBlue)),
-                                    const SizedBox(height: 4),
-                                    Text(comments[index]['comment_text'] ?? "", style: const TextStyle(fontSize: 13)),
-                                  ],
+                      itemCount: commentDocs.length,
+                      itemBuilder: (context, index) {
+                        var commentData = commentDocs[index].data() as Map<String, dynamic>;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 15),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              CircleAvatar(
+                                radius: 18,
+                                backgroundColor: sandBg,
+                                backgroundImage: (commentData['avatar_url'] != null && commentData['avatar_url'] != "")
+                                    ? NetworkImage(commentData['avatar_url']) : null,
+                                child: (commentData['avatar_url'] == null || commentData['avatar_url'] == "")
+                                    ? const Icon(Icons.person, size: 20, color: vkuBlue) : null,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(18)),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(commentData['fullname'] ?? "Sinh viên", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: vkuBlue)),
+                                      const SizedBox(height: 4),
+                                      Text(commentData['comment_text'] ?? "", style: const TextStyle(fontSize: 13)),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
+                            ],
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
               ),
-              _buildCommentInput(post['id'], setModalState),
+              _buildCommentInput(post, setModalState),
             ],
           ),
         ),
@@ -439,7 +475,7 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     );
   }
 
-  Widget _buildCommentInput(dynamic postId, StateSetter setModalState) {
+  Widget _buildCommentInput(dynamic post, StateSetter setModalState) {
     return Container(
       padding: EdgeInsets.fromLTRB(20, 10, 20, MediaQuery.of(context).viewInsets.bottom + 20),
       decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))]),
@@ -447,22 +483,46 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
         children: [
           Expanded(child: _buildTextField(_commentController, "Viết bình luận...")),
           const SizedBox(width: 10),
-          CircleAvatar(backgroundColor: vkuBlue, child: IconButton(icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20), onPressed: () => _handleSendComment(postId, setModalState))),
+          CircleAvatar(backgroundColor: vkuBlue, child: IconButton(icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20), onPressed: () => _handleSendComment(post, setModalState))),
         ],
       ),
     );
   }
 
-  Future<void> _handleSendComment(dynamic postId, StateSetter setModalState) async {
-    if (_commentController.text.isEmpty) return;
+  // --- ĐỒNG BỘ: GÁN TRƯỜNG USERNAME BẰNG MÃ SINH VIÊN KHI BÌNH LUẬN MỚI ---
+  Future<void> _handleSendComment(dynamic post, StateSetter setModalState) async {
+    if (_commentController.text.trim().isEmpty) return;
     try {
-      final res = await http.post(Uri.parse("$serverUrl/forum_manage.php"), body: {
-        "action": "add_comment", "post_id": postId.toString(), "user_id": widget.user['id'].toString(), "comment_text": _commentController.text
+      final String commentText = _commentController.text.trim();
+      final DocumentReference postRef = FirebaseFirestore.instance.collection('posts').doc(post['id']);
+
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        DocumentSnapshot postSnapshot = await transaction.get(postRef);
+        if (!postSnapshot.exists) return;
+
+        DocumentReference newCommentRef = postRef.collection('comments').doc();
+        transaction.set(newCommentRef, {
+          "username": widget.user['username'].toString(), // Đồng bộ dùng Mã sinh viên
+          "fullname": widget.user['fullname'] ?? "Sinh viên",
+          "avatar_url": widget.user['avatar_url'] ?? "",
+          "comment_text": commentText,
+          "created_at": DateTime.now().toString().substring(0, 19),
+        });
+
+        int currentCount = 0;
+        if (postSnapshot.data() != null) {
+          var data = postSnapshot.data() as Map<String, dynamic>;
+          currentCount = data['comment_count'] ?? 0;
+        }
+        transaction.update(postRef, {'comment_count': currentCount + 1});
       });
-      if (res.statusCode == 200) {
-        _commentController.clear(); setModalState(() {}); _loadPosts();
-      }
-    } catch (e) { debugPrint(e.toString()); }
+
+      _commentController.clear();
+      setModalState(() {});
+      _loadPosts();
+    } catch (e) {
+      debugPrint("Lỗi gửi bình luận: $e");
+    }
   }
 
   Widget _buildTextField(TextEditingController ctrl, String hint, {bool isNumber = false, int maxLines = 1}) {

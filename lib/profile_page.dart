@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Tra cứu và update thông tin cá nhân trên Firestore
+import 'package:firebase_storage/firebase_storage.dart'; // Đẩy ảnh đại diện lên mây Storage
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import '../common/login_page.dart'; // SỬA TẠI ĐÂY: Import LoginPage để phục vụ logic đăng xuất dứt điểm
 
 class ProfilePage extends StatefulWidget {
-  final dynamic user;
+  final dynamic user; // Nhận cục dữ liệu sinh viên đăng nhập từ HomePage sang
   const ProfilePage({super.key, required this.user});
 
   @override
@@ -28,55 +29,74 @@ class _ProfilePageState extends State<ProfilePage> {
   File? _image;
   String? existingAvatarUrl;
   final picker = ImagePicker();
+  bool isUpdating = false;
+
+  // Bốc Mã sinh viên (username) làm chìa khóa định danh chính trên Firestore
+  String get currentMssv => widget.user['username']?.toString() ?? "";
 
   @override
   void initState() {
     super.initState();
-    // 1. Khởi tạo controller từ dữ liệu widget
+    // 1. Khởi tạo controller từ dữ liệu widget cục bộ trước để tránh màn hình trống
     nameController = TextEditingController(text: widget.user['fullname']);
     phoneController = TextEditingController(text: widget.user['phone'] ?? "");
     cccdController = TextEditingController(text: widget.user['cccd'] ?? "");
     roomController = TextEditingController(text: widget.user['room_id']?.toString() ?? "");
-    emailController = TextEditingController(text: widget.user['email_contact'] ?? "");
+    emailController = TextEditingController(text: widget.user['email_contact'] ?? widget.user['email'] ?? "");
 
-    // 2. Gán link ảnh ban đầu
     existingAvatarUrl = widget.user['avatar_url'];
 
-    // 3. Load dữ liệu mới nhất
-    _fetchProfileFromSQL();
+    // 2. Tra cứu dữ liệu đồng bộ đám mây mới nhất đổ lên các ô nhập liệu
+    if (currentMssv.isNotEmpty) {
+      _fetchProfileFromCloud();
+    }
   }
 
-  Future<void> _fetchProfileFromSQL() async {
-    try {
-      var url = "http://10.60.56.48/dacs3/get_profile.php?user_id=${widget.user['id']}";
-      final response = await http.get(Uri.parse(url));
+  @override
+  void dispose() {
+    nameController.dispose();
+    phoneController.dispose();
+    cccdController.dispose();
+    roomController.dispose();
+    emailController.dispose();
+    super.dispose();
+  }
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data != null) {
-          setState(() {
-            nameController.text = data['fullname'] ?? nameController.text;
-            phoneController.text = data['phone'] ?? phoneController.text;
-            cccdController.text = data['cccd'] ?? cccdController.text;
-            roomController.text = data['room_id']?.toString() ?? roomController.text;
-            emailController.text = data['email_contact'] ?? emailController.text;
-            existingAvatarUrl = data['avatar_url'];
-          });
-        }
+  // --- LOGIC MỚI: BỐC DỮ LIỆU THÔNG TIN SINH VIÊN TỪ FIRESTORE MÂY ---
+  Future<void> _fetchProfileFromCloud() async {
+    try {
+      DocumentSnapshot userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentMssv)
+          .get();
+
+      if (userDoc.exists && mounted) {
+        final data = userDoc.data() as Map<String, dynamic>;
+        setState(() {
+          nameController.text = data['fullname'] ?? nameController.text;
+          phoneController.text = data['phone'] ?? phoneController.text;
+          cccdController.text = data['cccd'] ?? cccdController.text;
+          roomController.text = data['room_id']?.toString() ?? roomController.text;
+          emailController.text = data['email_contact'] ?? data['email'] ?? emailController.text;
+          existingAvatarUrl = data['avatar_url'];
+        });
       }
     } catch (e) {
-      debugPrint("Lỗi lấy dữ liệu: $e");
+      debugPrint("Lỗi tải hồ sơ sinh viên đám mây: $e");
     }
   }
 
   Future getImage() async {
-    final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+    final pickedFile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
     if (pickedFile != null) {
       setState(() { _image = File(pickedFile.path); });
     }
   }
 
+  // --- LOGIC MỚI: CẬP NHẬT HỒ SƠ LÊN FIRESTORE & STORAGE ---
   Future<void> _updateProfile() async {
+    if (currentMssv.isEmpty) return;
+
     showDialog(
         context: context,
         barrierDismissible: false,
@@ -84,43 +104,53 @@ class _ProfilePageState extends State<ProfilePage> {
     );
 
     try {
-      var uri = Uri.parse("http://10.60.56.48/dacs3/update_profile.php");
-      var request = http.MultipartRequest('POST', uri);
+      String finalAvatarUrl = existingAvatarUrl ?? "";
 
-      request.fields['user_id'] = widget.user['id'].toString();
-      request.fields['fullname'] = nameController.text;
-      request.fields['phone'] = phoneController.text;
-      request.fields['cccd'] = cccdController.text;
-      request.fields['room_id'] = roomController.text;
-      request.fields['email'] = emailController.text;
-
+      // 1. Nếu sinh viên chọn ảnh avatar mới, tiến hành up trực tiếp lên Firebase Storage
       if (_image != null) {
-        request.files.add(await http.MultipartFile.fromPath('avatar', _image!.path));
+        String fileName = "avatar_${currentMssv}_${DateTime.now().millisecondsSinceEpoch}.jpg";
+        Reference storageRef = FirebaseStorage.instance.ref().child("profiles/$fileName");
+
+        UploadTask uploadTask = storageRef.putFile(_image!);
+        TaskSnapshot snapshot = await uploadTask;
+        finalAvatarUrl = await snapshot.ref.getDownloadURL(); // Nhận link URL ảnh trực tuyến từ Google Server
       }
 
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
+      // 2. Cập nhật ghi đè dữ liệu tài khoản vào document của MSSV đó trong collection 'users'
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentMssv)
+          .update({
+        "fullname": nameController.text.trim(),
+        "phone": phoneController.text.trim(),
+        "cccd": cccdController.text.trim(),
+        "room_id": roomController.text.trim(),
+        "email_contact": emailController.text.trim(),
+        "avatar_url": finalAvatarUrl,
+      });
 
       if (!mounted) return;
-      Navigator.pop(context);
+      Navigator.pop(context); // Tắt spinner vòng tròn Loading
 
-      if (response.statusCode == 200) {
-        final result = jsonDecode(response.body);
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(result['message']), backgroundColor: vkuBlue, behavior: SnackBarBehavior.floating)
-        );
-        if (result['success'] == true) {
-          // Trả về true để HomePage biết cần load lại dữ liệu
-          Navigator.pop(context, true);
-        }
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("✨ Đã cập nhật hồ sơ sinh viên lên hệ thống đám mây!"), backgroundColor: vkuBlue, behavior: SnackBarBehavior.floating)
+      );
+
+      // Trả về true để HomePage tự động bốc dữ liệu mới render lại HeaderAvatar
+      Navigator.pop(context, true);
+
     } catch (e) {
       if (!mounted) return;
-      Navigator.pop(context);
-      debugPrint("Lỗi Update: $e");
+      Navigator.pop(context); // Tắt spinner vòng tròn Loading
+
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("❌ Lỗi cập nhật: $e"), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating)
+      );
+      debugPrint("Lỗi Update hồ sơ mây: $e");
     }
   }
 
+  // --- SỬA TẠI ĐÂY: LOGIC ĐĂNG XUẤT ĐÁ ĐỒNG BỘ TUYỆT ĐỐI RA MÀN HÌNH LOGIN ---
   void _showLogoutDialog() {
     showDialog(
       context: context,
@@ -132,7 +162,14 @@ class _ProfilePageState extends State<ProfilePage> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("HỦY", style: TextStyle(color: Colors.grey))),
           TextButton(
-            onPressed: () => Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false),
+            onPressed: () {
+              // Xóa toàn bộ lịch sử trang trước đó và điều hướng trực tiếp về trang Login sạch sẽ
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (context) => const LoginPage()),
+                    (route) => false,
+              );
+            },
             child: const Text("ĐĂNG XUẤT", style: TextStyle(color: colorRed, fontWeight: FontWeight.bold)),
           ),
         ],
@@ -149,10 +186,10 @@ class _ProfilePageState extends State<ProfilePage> {
         backgroundColor: sandBg,
         elevation: 0,
         centerTitle: true,
-        // QUAN TRỌNG: Xóa nút Back bằng cách set leading là null và chặn tự động thêm
         automaticallyImplyLeading: false,
       ),
       body: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 10),
         child: Column(
           children: [
@@ -170,14 +207,10 @@ class _ProfilePageState extends State<ProfilePage> {
                       backgroundColor: cardBg,
                       backgroundImage: _image != null
                           ? FileImage(_image!)
-                          : (existingAvatarUrl != null && existingAvatarUrl!.isNotEmpty)
-                          ? NetworkImage(
-                          existingAvatarUrl!.contains('http')
-                              ? existingAvatarUrl!
-                              : "http://10.60.56.48/dacs3/uploads/profiles/$existingAvatarUrl"
-                      )
+                          : (existingAvatarUrl != null && existingAvatarUrl!.startsWith('http'))
+                          ? NetworkImage(existingAvatarUrl!)
                           : null,
-                      child: (_image == null && (existingAvatarUrl == null || existingAvatarUrl!.isEmpty))
+                      child: (_image == null && (existingAvatarUrl == null || !existingAvatarUrl!.startsWith('http')))
                           ? const Icon(Icons.person_rounded, size: 70, color: colorAccent)
                           : null,
                     ),
@@ -200,7 +233,7 @@ class _ProfilePageState extends State<ProfilePage> {
             _buildInputField("Họ và tên", nameController, Icons.badge_outlined),
             _buildInputField("Số điện thoại", phoneController, Icons.phone_android_rounded),
             _buildInputField("Số CCCD", cccdController, Icons.card_membership_rounded),
-            _buildInputField("Số phòng", roomController, Icons.meeting_room_outlined),
+            _buildInputField("Số phòng ở ký túc xá", roomController, Icons.meeting_room_outlined),
             _buildInputField("Email liên hệ", emailController, Icons.alternate_email_rounded),
             const SizedBox(height: 30),
             _buildSubmitButton(),
@@ -235,7 +268,7 @@ class _ProfilePageState extends State<ProfilePage> {
       child: ElevatedButton.icon(
         onPressed: _showLogoutDialog,
         icon: const Icon(Icons.logout_rounded, color: Colors.white),
-        label: const Text("ĐĂNG XUẤT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 1.2)),
+        label: const Text("ĐĂNG XUẤT TÀI KHOẢN", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 1.2)),
         style: ElevatedButton.styleFrom(
           backgroundColor: colorRed,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
