@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // Chỉ cần dùng thư viện Firestore
+import 'package:cloud_firestore/cloud_firestore.dart'; // Đồng bộ duy nhất qua Firestore
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -32,11 +32,11 @@ class _RegisterPageState extends State<RegisterPage> {
     super.dispose();
   }
 
-  // --- LOGIC MỚI: ĐĂNG KÝ TRỰC TIẾP VÀO BẢNG FIRESTORE THUỒN ---
+  // --- LOGIC ĐĂNG KÝ + TỰ ĐỘNG KHỞI TẠO ĐỒNG THỜI HẠ TẦNG PHÒNG VÀ POWER_USAGE AN TOÀN 100% ---
   Future<void> _register() async {
     final String fullname = _nameController.text.trim();
     final String username = _usernameController.text.trim().toUpperCase(); // Ép chữ in hoa cho chuẩn MSSV
-    final String roomId = _roomController.text.trim();
+    final String roomId = _roomController.text.trim(); // Định dạng: Building_Room (VD: 2_422)
     final String password = _passController.text.trim();
 
     if (fullname.isEmpty || username.isEmpty || roomId.isEmpty || password.isEmpty) {
@@ -56,7 +56,7 @@ class _RegisterPageState extends State<RegisterPage> {
       // Bước 1: Kiểm tra xem Mã sinh viên này đã tồn tại trong bảng 'users' chưa
       DocumentSnapshot userDoc = await FirebaseFirestore.instance
           .collection('users')
-          .doc(username) // Check trực tiếp bằng ID tài liệu là Mã sinh viên
+          .doc(username) // Check trực tiếp O(1) bằng ID tài liệu là Mã sinh viên
           .get();
 
       if (userDoc.exists) {
@@ -71,39 +71,69 @@ class _RegisterPageState extends State<RegisterPage> {
         return;
       }
 
-      // Bước 2: Tạo trực tiếp bản ghi sinh viên mới vào bảng Firestore
-      // Đặt Document ID trùng khít với Mã sinh viên để LoginPage bốc data siêu tốc
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(username)
-          .set({
-        "username": username,
-        "fullname": fullname,
-        "room_id": roomId,
-        "password": password, // Lưu trực tiếp mật khẩu vào bảng phục vụ so khớp tại ô Login
-        "role": "student",    // Mặc định phân quyền tài khoản mới là sinh viên
-        "is_paid": "0",       // Mặc định chưa đóng tiền phòng
-        "created_at": DateTime.now().toString().substring(0, 19), // Định dạng chuẩn thời gian thực
+      // Bước 2: Sử dụng TRANSACTION để đồng bộ tạo hạ tầng phòng mới ở cả 'rooms' và 'power_usage' cùng lúc
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        DocumentReference userRef = FirebaseFirestore.instance.collection('users').doc(username);
+        DocumentReference roomRef = FirebaseFirestore.instance.collection('rooms').doc(roomId);
+        DocumentReference powerRef = FirebaseFirestore.instance.collection('power_usages').doc(roomId);
+
+        // Đọc kiểm tra trạng thái tồn tại của phòng trên mây trước khi ghi dữ liệu
+        DocumentSnapshot roomSnapshot = await transaction.get(roomRef);
+        DocumentSnapshot powerSnapshot = await transaction.get(powerRef);
+
+        final String currentTime = DateTime.now().toString().substring(0, 19);
+
+        // Luồng A: Tạo tài liệu thông tin sinh viên mới vào bảng 'users'
+        transaction.set(userRef, {
+          "username": username,
+          "fullname": fullname,
+          "room_id": roomId,
+          "password": password,
+          "role": "student",    // Mặc định phân quyền tài khoản mới là sinh viên
+          "is_paid": "0",       // Mặc định chưa đóng tiền phòng
+          "created_at": currentTime,
+        });
+
+        // Luồng B: Khởi tạo bảng 'rooms' quản lý trạng thái công tắc nếu phòng chưa tồn tại
+        if (!roomSnapshot.exists) {
+          transaction.set(roomRef, {
+            "room_id": roomId,
+            "total_kwh": 0.0,
+            "device_status": "OFF",     // Mặc định thiết bị đang tắt
+            "current_watt": 0,
+            "updated_at": currentTime,
+          });
+        }
+
+        // Luồng C: Tự động tạo bản ghi khởi tạo điện năng tiêu thụ trong bảng 'power_usage'
+        if (!powerSnapshot.exists) {
+          transaction.set(powerRef, {
+            "room_id": roomId,
+            "total_kwh": 0.0,         // Số điện ban đầu reset về 0 kWh cho Server IoT tính toán
+            "current_watt": 0,        // Công suất tiêu thụ ban đầu bằng 0W
+            "updated_at": currentTime,
+          });
+        }
       });
 
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text("🎉 Đăng ký thành công! Mời bạn đăng nhập."),
+          content: Text("🎉 Đăng ký thành công và khởi tạo hạ tầng phòng mới!"),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
         ),
       );
 
-      // Đăng ký xong tự động quay về trang Login
+      // Quay trở lại trang Đăng nhập để nạp dữ liệu sạch
       Navigator.pop(context);
 
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("Lỗi hệ thống: ${e.toString()}"),
+          content: Text("Lỗi hệ thống mây: ${e.toString()}"),
           backgroundColor: Colors.redAccent,
           behavior: SnackBarBehavior.floating,
         ),
@@ -172,7 +202,7 @@ class _RegisterPageState extends State<RegisterPage> {
                       const SizedBox(height: 15),
                       _buildTextField(controller: _usernameController, label: "Mã sinh viên", icon: Icons.account_circle_outlined),
                       const SizedBox(height: 15),
-                      _buildTextField(controller: _roomController, label: "Số phòng (VD: 2_302)", icon: Icons.meeting_room_outlined),
+                      _buildTextField(controller: _roomController, label: "Số phòng (VD: 2_422)", icon: Icons.meeting_room_outlined),
                       const SizedBox(height: 15),
                       _buildTextField(controller: _passController, label: "Mật khẩu", icon: Icons.lock_open_rounded, isPassword: true),
                       const SizedBox(height: 30),

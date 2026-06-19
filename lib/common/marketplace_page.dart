@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // Đồng bộ duy nhất qua Firestore
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để dò bảng dữ liệu
+import 'dart:convert'; // BẮT BUỘC: Giải mã chuỗi Base64 ảnh hàng hóa trực tiếp
 import '../maketplace/add_product_page.dart';
 import '../maketplace/edit_product_page.dart';
 import '../maketplace/product_detail_page.dart';
@@ -27,7 +28,6 @@ class _MarketplacePageState extends State<MarketplacePage> {
   @override
   Widget build(BuildContext context) {
     // TẠO LUỒNG LẮNG NGHE DỮ LIỆU CHỢ THỜI GIAN THỰC (REALTIME STREAM)
-    // Sắp xếp các món đồ mới đăng lên trên đầu tiên dựa vào created_at
     final Stream<QuerySnapshot> _productStream = FirebaseFirestore.instance
         .collection('marketplace')
         .orderBy('created_at', descending: true)
@@ -46,10 +46,13 @@ class _MarketplacePageState extends State<MarketplacePage> {
               return const Center(child: CircularProgressIndicator(color: vkuBlue));
             }
 
-            // Chuyển đổi toàn bộ tài liệu bốc từ bảng Firestore sang danh sách List để lặp vòng lặp
+            if (!snapshot.hasData || snapshot.data == null) {
+              return const Center(child: Text("Không có dữ liệu hàng hóa."));
+            }
+
             List<dynamic> products = snapshot.data!.docs.map((doc) {
               Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-              data['id'] = doc.id; // Lưu lại ID bài đăng hàng hóa để phục vụ chỉnh sửa hoặc xoá bài
+              data['id'] = doc.id;
               return data;
             }).toList();
 
@@ -80,6 +83,7 @@ class _MarketplacePageState extends State<MarketplacePage> {
                     delegate: SliverChildBuilderDelegate(
                           (context, index) => _buildOptimizedProductItem(products[index]),
                       childCount: products.length,
+                      addRepaintBoundaries: true,
                     ),
                   ),
                 ),
@@ -88,7 +92,8 @@ class _MarketplacePageState extends State<MarketplacePage> {
           },
         ),
       ),
-      floatingActionButton: isAdmin ? _buildFab() : null,
+      // MỞ FAB ĐĂNG BÀI: Cho phép tất cả cư dân đăng bán đồ cũ (Sinh viên & Admin đều dùng được)
+      floatingActionButton: _buildFab(),
     );
   }
 
@@ -109,13 +114,33 @@ class _MarketplacePageState extends State<MarketplacePage> {
     );
   }
 
+  // --- SIÊU TỐI ƯU LUỒNG HIỂN THỊ: BAO QUÉT ĐA NĂNG CẢ ẢNH MẠNG LẪN ẢNH BASE64 TRÊN CARD ---
   Widget _buildOptimizedProductItem(dynamic item) {
-    String imageUrl = item['image_url'] ?? "";
+    String imageUrl = (item['image_url'] ?? "").toString().trim();
+    ImageProvider? cardImageProvider;
+
+    if (imageUrl.isNotEmpty) {
+      if (imageUrl.startsWith('http')) {
+        // Luồng 1: Nếu là đường link URL mây storage bình thường
+        cardImageProvider = NetworkImage(imageUrl);
+      } else {
+        // Luồng 2: Tự động bắt cặp giải mã chuỗi Base64 ảnh hàng hóa siêu tốc
+        try {
+          String cleanStr = imageUrl.replaceAll('\n', '').replaceAll('\r', '').trim();
+          if (cleanStr.contains(',')) {
+            cleanStr = cleanStr.split(',')[1];
+          }
+          cardImageProvider = MemoryImage(base64Decode(cleanStr));
+        } catch (e) {
+          debugPrint("Lỗi phân rã Base64 ảnh hàng hóa: $e");
+        }
+      }
+    }
 
     return RepaintBoundary(
       child: InkWell(
         onTap: () {
-          // Nếu là admin thì đẩy thẳng qua trang cấu hình Sửa/Xoá, nếu là sinh viên thì xem Chi tiết mặt hàng
+          // ADMIN vào sẽ mở trang Chỉnh sửa/Xóa (EditProductPage), SINH VIÊN vào mở xem Chi tiết (ProductDetailPage)
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -136,14 +161,12 @@ class _MarketplacePageState extends State<MarketplacePage> {
               Expanded(
                 child: ClipRRect(
                   borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                  child: imageUrl.startsWith('http')
-                      ? Image.network(
-                    imageUrl,
+                  child: cardImageProvider != null
+                      ? Image(
+                    image: cardImageProvider,
                     fit: BoxFit.cover,
                     width: double.infinity,
-                    cacheWidth: 350,
-                    filterQuality: FilterQuality.low,
-                    errorBuilder: (c, e, s) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image)),
+                    errorBuilder: (c, e, s) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image, color: marketAccent)),
                   )
                       : Container(
                     color: Colors.grey[200],
@@ -168,7 +191,6 @@ class _MarketplacePageState extends State<MarketplacePage> {
                       children: [
                         const Icon(Icons.person_pin_circle_rounded, size: 10, color: marketAccent),
                         const SizedBox(width: 4),
-                        // ĐỒNG BỘ: Hiển thị Họ tên người đăng hoặc Mã sinh viên nếu trống trường dữ liệu
                         Expanded(child: Text(item['fullname'] ?? item['username'] ?? "Sinh viên VKU",
                             style: const TextStyle(fontSize: 9, color: Colors.blueGrey, fontWeight: FontWeight.w600), maxLines: 1)),
                       ],
@@ -189,7 +211,6 @@ class _MarketplacePageState extends State<MarketplacePage> {
       elevation: 8,
       onPressed: () {
         Navigator.push(context, MaterialPageRoute(
-          // Truyền Mã sinh viên (username) vào form AddProductPage để lưu cấu trúc dòng chuẩn xác
           builder: (context) => AddProductPage(userId: widget.userId),
         ));
       },

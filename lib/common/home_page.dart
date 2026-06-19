@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert'; // BẮT BUỘC: Thư viện mã hóa và giải mã chuỗi Base64 ngoài giao diện Home
 
 import '../admin/admin_power_usage_page.dart';
 import '../student/student_power_usage_page.dart';
@@ -39,12 +40,26 @@ class _HomePageState extends State<HomePage> {
   Map<String, dynamic> adminStats = {"devices": "0", "requests": "0", "residents": "0"};
   final Map<String, Map<String, dynamic>> _newsAiCache = {};
 
+  // Khởi tạo một Stream Realtime cố định trỏ thẳng vào profile của user để tối ưu phần cứng
+  late Stream<QuerySnapshot> _profileStream;
+
   @override
   void initState() {
     super.initState();
     _pageController = PageController(initialPage: 0);
     currentUser = widget.user;
     displayRoom = currentUser['room_id']?.toString() ?? "Chưa rõ";
+
+    String mssv = currentUser['username']?.toString() ?? "";
+    String currentUserId = currentUser['user_id']?.toString() ?? currentUser['id']?.toString() ?? mssv;
+
+    // Thiết lập stream lắng nghe biến động ảnh đại diện realtime không qua bộ lọc mạng thủ công
+    _profileStream = FirebaseFirestore.instance
+        .collection('profiles')
+        .where('user_id', isEqualTo: currentUserId)
+        .limit(1)
+        .snapshots();
+
     _initData();
   }
 
@@ -100,7 +115,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // --- ĐỒNG BỘ: ĐẾM THÔNG BÁO THEO USERNAME (MÃ SINH VIÊN) ---
   Future<void> _checkPrivateNotifications() async {
     try {
       QuerySnapshot querySnapshot = await FirebaseFirestore.instance
@@ -139,26 +153,27 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // --- ĐỒNG BỘ: REFRESH PROFILE DỰA VÀO ĐỊNH DANH USERNAME TRONG BẢNG ---
+  // --- ĐỒNG BỘ TỐC ĐỘ: CHỈ LOAD THÔNG TIN PHÒNG BAN CƠ BẢN, TÁCH LẬP AVATAR SANG STREAM CHẠY RAM ---
   Future<void> _refreshUserData() async {
     try {
-      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+      String mssv = currentUser['username']?.toString() ?? "";
+
+      QuerySnapshot userSnapshot = await FirebaseFirestore.instance
           .collection('users')
-          .where('username', isEqualTo: currentUser['username'].toString())
+          .where('username', isEqualTo: mssv)
           .limit(1)
           .get();
 
-      if (querySnapshot.docs.isNotEmpty && mounted) {
-        Map<String, dynamic> data = querySnapshot.docs.first.data() as Map<String, dynamic>;
+      if (userSnapshot.docs.isNotEmpty && mounted) {
+        Map<String, dynamic> userData = userSnapshot.docs.first.data() as Map<String, dynamic>;
         setState(() {
-          currentUser['fullname'] = data['fullname'] ?? currentUser['fullname'];
-          currentUser['avatar_url'] = data['avatar_url'] ?? "";
-          displayRoom = (data['room_id'] ?? "Chưa rõ").toString();
+          currentUser['fullname'] = userData['fullname'] ?? currentUser['fullname'];
+          displayRoom = (userData['room_id'] ?? "Chưa rõ").toString();
           currentUser['room_id'] = displayRoom;
         });
       }
     } catch (e) {
-      debugPrint("Lỗi cập nhật Profile tại Home: $e");
+      debugPrint("Lỗi cập nhật dữ liệu tài khoản tại Home: $e");
     }
   }
 
@@ -202,7 +217,10 @@ class _HomePageState extends State<HomePage> {
                   title: userRole == 'admin' ? "QUẢN LÝ NỘI TRÚ" : "SỔ TAY NỘI TRÚ",
                   subtitle: userRole == 'admin' ? "Hệ thống Admin VKU" : "Phòng hiện tại: $displayRoom",
                   icon: userRole == 'admin' ? Icons.admin_panel_settings_rounded : Icons.assignment_ind_rounded,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => userRole == 'admin' ? const AdminStudentListPage() : StudentStatusPage(user: currentUser))),
+                  onTap: () async {
+                    await Navigator.push(context, MaterialPageRoute(builder: (context) => userRole == 'admin' ? const AdminStudentListPage() : StudentStatusPage(user: currentUser)));
+                    _refreshUserData();
+                  },
                 ),
               ),
             ),
@@ -251,31 +269,67 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // --- SIÊU TỐC ĐỘ: LỒNG STREAMBUILDER ĐỂ RENDER ẢNH ĐẠI DIỆN TỪ BỘ NHỚ RAM TỨC THÌ ---
   Widget _buildSliverHeader(String role, String userId) {
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(25, 20, 25, 10),
-        child: Row(children: [
-          GestureDetector(
-            onTap: () => _pageController.animateToPage(2, duration: const Duration(milliseconds: 400), curve: Curves.easeInOutCubic),
-            child: CircleAvatar(
-              radius: 25,
-              backgroundColor: cardBg,
-              backgroundImage: (currentUser['avatar_url'] != null && currentUser['avatar_url'] != "") ? NetworkImage(currentUser['avatar_url']) : null,
-              child: (currentUser['avatar_url'] == null || currentUser['avatar_url'] == "") ? const Icon(Icons.person_rounded, color: vkuBlue, size: 28) : null,
+    return StreamBuilder<QuerySnapshot>(
+        stream: _profileStream,
+        builder: (context, snapshot) {
+          String? homeAvatarUrl;
+          if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
+            var profileData = snapshot.data!.docs.first.data() as Map<String, dynamic>;
+            homeAvatarUrl = profileData['avatar_url']?.toString();
+            // Cập nhật ngược lại cache cục bộ phòng hờ tab khác cần bốc đồng thời
+            currentUser['avatar_url'] = homeAvatarUrl;
+          } else {
+            homeAvatarUrl = currentUser['avatar_url']?.toString();
+          }
+
+          ImageProvider? homeAvatarProvider;
+          if (homeAvatarUrl != null && homeAvatarUrl.isNotEmpty) {
+            if (homeAvatarUrl.startsWith('data:image')) {
+              try {
+                String cleanUrl = homeAvatarUrl.replaceAll('\n', '').replaceAll('\r', '').trim();
+                if (cleanUrl.contains(',')) {
+                  String base64Str = cleanUrl.split(',')[1];
+                  homeAvatarProvider = MemoryImage(base64Decode(base64Str));
+                } else {
+                  homeAvatarProvider = MemoryImage(base64Decode(cleanUrl));
+                }
+              } catch (e) {
+                debugPrint("Lỗi giải mã Base64 nhanh ngoài Home: $e");
+                homeAvatarProvider = null;
+              }
+            } else if (homeAvatarUrl.startsWith('http')) {
+              homeAvatarProvider = NetworkImage(homeAvatarUrl);
+            }
+          }
+
+          return SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(25, 20, 25, 10),
+              child: Row(children: [
+                GestureDetector(
+                  onTap: () => _pageController.animateToPage(2, duration: const Duration(milliseconds: 400), curve: Curves.easeInOutCubic),
+                  child: CircleAvatar(
+                    radius: 25,
+                    backgroundColor: cardBg,
+                    backgroundImage: homeAvatarProvider,
+                    child: homeAvatarProvider == null ? const Icon(Icons.person_rounded, color: vkuBlue, size: 28) : null,
+                  ),
+                ),
+                const SizedBox(width: 15),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(role == 'admin' ? "Quản trị viên," : "Thành viên VKU,", style: const TextStyle(color: vkuBlue, fontSize: 12, fontWeight: FontWeight.w500)),
+                  Text(currentUser['fullname'] ?? "Học viên", style: const TextStyle(color: vkuBlue, fontSize: 17, fontWeight: FontWeight.w900)),
+                ])),
+                _buildTopIconButton(role == 'admin' ? Icons.notifications_active_rounded : Icons.notifications_active_outlined, () {
+                  if (role == 'admin') { _showNotificationDialog(); }
+                  else { Navigator.push(context, MaterialPageRoute(builder: (context) => NotificationPage(userId: userId))); }
+                }),
+              ]),
             ),
-          ),
-          const SizedBox(width: 15),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(role == 'admin' ? "Quản trị viên," : "Thành viên VKU,", style: const TextStyle(color: vkuBlue, fontSize: 12, fontWeight: FontWeight.w500)),
-            Text(currentUser['fullname'] ?? "Học viên", style: const TextStyle(color: vkuBlue, fontSize: 17, fontWeight: FontWeight.w900)),
-          ])),
-          _buildTopIconButton(role == 'admin' ? Icons.notifications_active_rounded : Icons.notifications_active_outlined, () {
-            if (role == 'admin') { _showNotificationDialog(); }
-            else { Navigator.push(context, MaterialPageRoute(builder: (context) => NotificationPage(userId: userId))); }
-          }),
-        ]),
-      ),
+          );
+        }
     );
   }
 
@@ -307,11 +361,12 @@ class _HomePageState extends State<HomePage> {
   Widget _buildServiceCard(String title, IconData icon, Color color, dynamic target) {
     return RepaintBoundary(
       child: InkWell(
-        onTap: () {
+        onTap: () async {
           if (target is int) {
             _pageController.animateToPage(target, duration: const Duration(milliseconds: 400), curve: Curves.easeInOutCubic);
           } else {
-            Navigator.push(context, MaterialPageRoute(builder: (context) => target));
+            await Navigator.push(context, MaterialPageRoute(builder: (context) => target));
+            _refreshUserData();
           }
         },
         borderRadius: BorderRadius.circular(28),
@@ -370,7 +425,10 @@ class _HomePageState extends State<HomePage> {
   Widget _buildNavItem(int index, IconData icon, String label) {
     bool isSelected = _selectedIndex == index;
     return InkWell(
-      onTap: () => _pageController.animateToPage(index, duration: const Duration(milliseconds: 400), curve: Curves.easeInOutCubic),
+      onTap: () {
+        _pageController.animateToPage(index, duration: const Duration(milliseconds: 400), curve: Curves.easeInOutCubic);
+        _refreshUserData();
+      },
       splashColor: Colors.transparent,
       highlightColor: Colors.transparent,
       child: AnimatedContainer(

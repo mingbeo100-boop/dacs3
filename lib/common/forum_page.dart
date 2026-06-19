@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để dò bảng dữ liệu
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
+import 'dart:convert'; // BẮT BUỘC: Giải mã chuỗi Base64 avatar động của cư dân KTX
+import 'package:firebase_storage/firebase_storage.dart';
 
 class ForumPage extends StatefulWidget {
   final dynamic user;
@@ -14,8 +15,6 @@ class ForumPage extends StatefulWidget {
 
 class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  List<dynamic> _posts = [];
-  bool _isPageLoading = true;
 
   static const vkuBlue = Color(0xFF072C6C);
   static const vkuOrange = Color(0xFFFF8C00);
@@ -35,7 +34,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    _loadPosts();
   }
 
   @override
@@ -46,29 +44,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     _priceController.dispose();
     _commentController.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadPosts() async {
-    try {
-      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
-          .collection('posts')
-          .orderBy('created_at', descending: true)
-          .get()
-          .timeout(const Duration(seconds: 5));
-
-      if (mounted) {
-        setState(() {
-          _posts = querySnapshot.docs.map((doc) {
-            Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-            data['id'] = doc.id;
-            return data;
-          }).toList();
-          _isPageLoading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _isPageLoading = false);
-    }
   }
 
   @override
@@ -84,14 +59,12 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
             _buildSectionTitle(_tabController.index == 0 ? "BẢN TIN SINH VIÊN" : "DANH MỤC HÀNG HÓA"),
 
             Expanded(
-              child: _isPageLoading
-                  ? const Center(child: CircularProgressIndicator(color: vkuOrange))
-                  : TabBarView(
+              child: TabBarView(
                 controller: _tabController,
                 physics: const BouncingScrollPhysics(),
                 children: [
-                  _buildPostListView('confession'),
-                  _buildPostListView('market'),
+                  _buildPostStreamView('confession'),
+                  _buildPostStreamView('market'),
                 ],
               ),
             ),
@@ -155,6 +128,7 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
   }
 
   Widget _buildForumInputCard() {
+    String currentMssv = (widget.user['username'] ?? "").toString().trim();
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 5, 20, 15),
       padding: const EdgeInsets.all(15),
@@ -168,13 +142,22 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
         borderRadius: BorderRadius.circular(20),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: sandBg,
-              backgroundImage: (widget.user['avatar_url'] != null && widget.user['avatar_url'] != "")
-                  ? NetworkImage(widget.user['avatar_url']) : null,
-              child: (widget.user['avatar_url'] == null || widget.user['avatar_url'] == "")
-                  ? const Icon(Icons.person, color: vkuBlue, size: 20) : null,
+            // DÒ PROFILE O(1): Tự động bốc avatar Base64 của chính mình tại ô đăng bài
+            StreamBuilder<DocumentSnapshot>(
+                stream: FirebaseFirestore.instance.collection('profiles').doc(currentMssv).snapshots(),
+                builder: (context, snapshot) {
+                  ImageProvider? myAvatar;
+                  if (snapshot.hasData && snapshot.data!.exists) {
+                    String raw = (snapshot.data!.data() as Map<String, dynamic>)['avatar_url'] ?? "";
+                    myAvatar = _parseBase64Avatar(raw);
+                  }
+                  return CircleAvatar(
+                    radius: 18,
+                    backgroundColor: sandBg,
+                    backgroundImage: myAvatar,
+                    child: myAvatar == null ? const Icon(Icons.person, color: vkuBlue, size: 20) : null,
+                  );
+                }
             ),
             const SizedBox(width: 15),
             Expanded(
@@ -198,61 +181,81 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
           Container(
             width: 5,
             height: 18,
-            decoration: BoxDecoration(
-              color: vkuOrange,
-              borderRadius: BorderRadius.circular(10),
-            ),
+            decoration: BoxDecoration(color: vkuOrange, borderRadius: BorderRadius.circular(10)),
           ),
           const SizedBox(width: 12),
-          Text(
-            title,
-            style: const TextStyle(
-                color: vkuBlue,
-                fontWeight: FontWeight.w900,
-                fontSize: 13,
-                letterSpacing: 0.5
-            ),
-          ),
+          Text(title, style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
         ],
       ),
     );
   }
 
-  Widget _buildPostListView(String type) {
-    List<dynamic> filteredList = _posts.where((p) => p['type'] == type).toList();
-    return RefreshIndicator(
-      onRefresh: _loadPosts,
-      color: vkuOrange,
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(15, 0, 15, 30),
-        physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: filteredList.length,
-        itemBuilder: (context, index) => _buildPostCard(filteredList[index]),
-      ),
+  Widget _buildPostStreamView(String type) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('posts')
+          .where('type', isEqualTo: type)
+          .orderBy('created_at', descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text("Đang đồng bộ chỉ mục mây hoặc lỗi: ${snapshot.error}", style: const TextStyle(fontSize: 11, color: Colors.grey), textAlign: TextAlign.center)));
+        }
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: vkuOrange));
+        }
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return const Center(child: Text("Chưa có bài đăng nào ở danh mục này.", style: TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold)));
+        }
+
+        var docs = snapshot.data!.docs;
+
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(15, 0, 15, 30),
+          physics: const BouncingScrollPhysics(),
+          itemCount: docs.length,
+          itemBuilder: (context, index) {
+            Map<String, dynamic> postData = docs[index].data() as Map<String, dynamic>;
+            postData['id'] = docs[index].id;
+            return _buildPostCard(postData);
+          },
+        );
+      },
     );
   }
 
   Widget _buildPostCard(dynamic post) {
+    String authorMssv = (post['username'] ?? "").toString().trim();
+
     return Container(
       margin: const EdgeInsets.only(bottom: 15),
-      decoration: BoxDecoration(
-          color: cardWhite,
-          borderRadius: BorderRadius.circular(28),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10)]),
+      decoration: BoxDecoration(color: cardWhite, borderRadius: BorderRadius.circular(28), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10)]),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ListTile(
-            leading: CircleAvatar(
-              backgroundColor: sandBg,
-              backgroundImage: (post['avatar_url'] != null && post['avatar_url'] != "")
-                  ? NetworkImage(post['avatar_url']) : null,
-              child: (post['avatar_url'] == null || post['avatar_url'] == "")
-                  ? const Icon(Icons.person, color: vkuBlue, size: 18) : null,
-            ),
-            title: Text(post['fullname'] ?? "Thành viên VKU",
-                style: const TextStyle(fontWeight: FontWeight.w900, color: vkuBlue, fontSize: 13)),
-            subtitle: Text(post['created_at'] ?? "", style: const TextStyle(fontSize: 9, color: Colors.grey)),
+          // DÒ PROFILE LIVE O(1): Tìm avatar và họ tên mới nhất của tác giả bài viết
+          StreamBuilder<DocumentSnapshot>(
+              stream: FirebaseFirestore.instance.collection('profiles').doc(authorMssv).snapshots(),
+              builder: (context, profSnapshot) {
+                String authorName = post['fullname'] ?? "Thành viên VKU";
+                ImageProvider? authorAvatar;
+
+                if (profSnapshot.hasData && profSnapshot.data!.exists) {
+                  var pData = profSnapshot.data!.data() as Map<String, dynamic>;
+                  authorName = pData['fullname'] ?? authorName;
+                  authorAvatar = _parseBase64Avatar(pData['avatar_url'] ?? "");
+                }
+
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: sandBg,
+                    backgroundImage: authorAvatar,
+                    child: authorAvatar == null ? const Icon(Icons.person, color: vkuBlue, size: 18) : null,
+                  ),
+                  title: Text(authorName, style: const TextStyle(fontWeight: FontWeight.w900, color: vkuBlue, fontSize: 13)),
+                  subtitle: Text(post['created_at'] ?? "", style: const TextStyle(fontSize: 9, color: Colors.grey)),
+                );
+              }
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
@@ -286,13 +289,11 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
                   onPressed: () => _openCommentsModal(post),
                   icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16, color: vkuBlue),
                   label: Text(
-                    (post['comment_count'] != null && post['comment_count'] != 0 && post['comment_count'] != "0")
+                    (post['comment_count'] != null && post['comment_count'] != 0)
                         ? "${post['comment_count']} Bình luận" : "Bình luận",
                     style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 11),
                   ),
                 ),
-                const Spacer(),
-                IconButton(onPressed: () {}, icon: const Icon(Icons.favorite_border_rounded, size: 18, color: Colors.grey)),
               ],
             ),
           ),
@@ -337,7 +338,7 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
                 const SizedBox(height: 10),
                 TextButton.icon(
                   onPressed: () async {
-                    final img = await _picker.pickImage(source: ImageSource.gallery);
+                    final img = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 60);
                     if (img != null) setModalState(() => _selectedImage = File(img.path));
                   },
                   icon: const Icon(Icons.image_rounded, color: vkuOrange),
@@ -360,7 +361,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     );
   }
 
-  // --- ĐỒNG BỘ: GÁN TRƯỜNG USERNAME BẰNG MÃ SINH VIÊN KHI ĐĂNG BÀI MỚI ---
   Future<void> _handleCreatePost(String type) async {
     if (_titleController.text.trim().isEmpty || _contentController.text.trim().isEmpty) return;
     setState(() => _isSubmitting = true);
@@ -376,9 +376,8 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
       }
 
       await FirebaseFirestore.instance.collection('posts').add({
-        'username': widget.user['username'].toString(), // Đồng bộ dùng Mã sinh viên
+        'username': widget.user['username'].toString().trim(),
         'fullname': widget.user['fullname'] ?? "Thành viên VKU",
-        'avatar_url': widget.user['avatar_url'] ?? "",
         'type': type,
         'title': _titleController.text.trim(),
         'content': _contentController.text.trim(),
@@ -391,7 +390,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
       if (mounted) {
         Navigator.pop(context);
         _clearForm();
-        _loadPosts();
       }
     } catch (e) {
       debugPrint("Lỗi đăng bài viết: $e");
@@ -431,36 +429,51 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
                       itemCount: commentDocs.length,
                       itemBuilder: (context, index) {
                         var commentData = commentDocs[index].data() as Map<String, dynamic>;
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 15),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              CircleAvatar(
-                                radius: 18,
-                                backgroundColor: sandBg,
-                                backgroundImage: (commentData['avatar_url'] != null && commentData['avatar_url'] != "")
-                                    ? NetworkImage(commentData['avatar_url']) : null,
-                                child: (commentData['avatar_url'] == null || commentData['avatar_url'] == "")
-                                    ? const Icon(Icons.person, size: 20, color: vkuBlue) : null,
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(18)),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(commentData['fullname'] ?? "Sinh viên", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: vkuBlue)),
-                                      const SizedBox(height: 4),
-                                      Text(commentData['comment_text'] ?? "", style: const TextStyle(fontSize: 13)),
-                                    ],
-                                  ),
+                        String commenterMssv = (commentData['username'] ?? "").toString().trim();
+
+                        // DÒ PROFILE BÌNH LUẬN O(1): Kéo tên và avatar động của sinh viên comment
+                        return StreamBuilder<DocumentSnapshot>(
+                            stream: FirebaseFirestore.instance.collection('profiles').doc(commenterMssv).snapshots(),
+                            builder: (context, profSnapshot) {
+                              String cName = commentData['fullname'] ?? "Sinh viên";
+                              ImageProvider? cAvatar;
+
+                              if (profSnapshot.hasData && profSnapshot.data!.exists) {
+                                var pData = profSnapshot.data!.data() as Map<String, dynamic>;
+                                cName = pData['fullname'] ?? cName;
+                                cAvatar = _parseBase64Avatar(pData['avatar_url'] ?? "");
+                              }
+
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 15),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 18,
+                                      backgroundColor: sandBg,
+                                      backgroundImage: cAvatar,
+                                      child: cAvatar == null ? const Icon(Icons.person, size: 20, color: vkuBlue) : null,
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Container(
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(18)),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(cName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: vkuBlue)),
+                                            const SizedBox(height: 4),
+                                            Text(commentData['comment_text'] ?? "", style: const TextStyle(fontSize: 13)),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
-                            ],
-                          ),
+                              );
+                            }
                         );
                       },
                     );
@@ -475,12 +488,34 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     );
   }
 
+  // --- LUỒNG AVATAR ĐỘNG VÀO Ô NHẬP BÌNH LUẬN CỦA CHÍNH BẠN ---
   Widget _buildCommentInput(dynamic post, StateSetter setModalState) {
+    String myMssv = (widget.user['username'] ?? "").toString().trim();
+
     return Container(
       padding: EdgeInsets.fromLTRB(20, 10, 20, MediaQuery.of(context).viewInsets.bottom + 20),
       decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))]),
       child: Row(
         children: [
+          // DÒ PROFILE LIVE O(1): Hiển thị Avatar Base64 của bạn kế bên ô nhập text bình luận công phá
+          StreamBuilder<DocumentSnapshot>(
+              stream: FirebaseFirestore.instance.collection('profiles').doc(myMssv).snapshots(),
+              builder: (context, snapshot) {
+                ImageProvider? inputAvatar;
+                if (snapshot.hasData && snapshot.data!.exists) {
+                  var pData = snapshot.data!.data() as Map<String, dynamic>;
+                  inputAvatar = _parseBase64Avatar(pData['avatar_url'] ?? "");
+                }
+
+                return CircleAvatar(
+                  radius: 18,
+                  backgroundColor: sandBg,
+                  backgroundImage: inputAvatar,
+                  child: inputAvatar == null ? const Icon(Icons.person, size: 18, color: vkuBlue) : null,
+                );
+              }
+          ),
+          const SizedBox(width: 12),
           Expanded(child: _buildTextField(_commentController, "Viết bình luận...")),
           const SizedBox(width: 10),
           CircleAvatar(backgroundColor: vkuBlue, child: IconButton(icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20), onPressed: () => _handleSendComment(post, setModalState))),
@@ -489,7 +524,6 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
     );
   }
 
-  // --- ĐỒNG BỘ: GÁN TRƯỜNG USERNAME BẰNG MÃ SINH VIÊN KHI BÌNH LUẬN MỚI ---
   Future<void> _handleSendComment(dynamic post, StateSetter setModalState) async {
     if (_commentController.text.trim().isEmpty) return;
     try {
@@ -502,9 +536,8 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
 
         DocumentReference newCommentRef = postRef.collection('comments').doc();
         transaction.set(newCommentRef, {
-          "username": widget.user['username'].toString(), // Đồng bộ dùng Mã sinh viên
+          "username": widget.user['username'].toString().trim(),
           "fullname": widget.user['fullname'] ?? "Sinh viên",
-          "avatar_url": widget.user['avatar_url'] ?? "",
           "comment_text": commentText,
           "created_at": DateTime.now().toString().substring(0, 19),
         });
@@ -519,9 +552,28 @@ class _ForumPageState extends State<ForumPage> with SingleTickerProviderStateMix
 
       _commentController.clear();
       setModalState(() {});
-      _loadPosts();
     } catch (e) {
       debugPrint("Lỗi gửi bình luận: $e");
+    }
+  }
+
+  // --- CƠ CHẾ GIẢI MÃ CHẤP MỌI LOẠI ĐỊNH DẠNG BASE64 CHỐNG LỖI ẨN ẢNH ---
+  ImageProvider? _parseBase64Avatar(String rawBase64) {
+    if (rawBase64.trim().isEmpty) return null;
+    try {
+      // 1. Làm sạch chuỗi hoàn toàn khỏi các ký tự xuống dòng rác do Firestore tự sinh
+      String cleanStr = rawBase64.replaceAll('\n', '').replaceAll('\r', '').trim();
+
+      // 2. Nếu chuỗi có chứa dấu phẩy (Cấu trúc header data:image/jpeg;base64,xxxx)
+      if (cleanStr.contains(',')) {
+        cleanStr = cleanStr.split(',')[1];
+      }
+
+      // 3. Tiến hành giải mã mảng byte trực tiếp trên RAM O(1)
+      return MemoryImage(base64Decode(cleanStr));
+    } catch (e) {
+      debugPrint("Lỗi phân rã chuỗi mã hóa tại diễn đàn: $e");
+      return null;
     }
   }
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để quản lý cư dân Realtime
 import '../student/student_detail_admin_page.dart'; // Giữ duy nhất một dòng import chuẩn trong cùng thư mục admin
+import '../widgets/app_avatar.dart'; // ĐÃ KẾT NỐI: Import widget dùng chung xử lý ảnh an toàn
 
 class AdminStudentListPage extends StatefulWidget {
   const AdminStudentListPage({super.key});
@@ -42,7 +43,7 @@ class _AdminStudentListPageState extends State<AdminStudentListPage> {
 
   @override
   Widget build(BuildContext context) {
-    // STREAM LẮNG NGHE TOÀN BỘ CƯ DÂN CÓ ROLE LÀ STUDENT TRÊN FIRESTORE Realtime
+    // STREAM 1: LẮNG NGHE TOÀN BỘ CƯ DÂN CÓ ROLE LÀ STUDENT TRÊN FIRESTORE Realtime
     final Stream<QuerySnapshot> _studentsStream = FirebaseFirestore.instance
         .collection('users')
         .where('role', isEqualTo: 'student')
@@ -53,84 +54,128 @@ class _AdminStudentListPageState extends State<AdminStudentListPage> {
       body: SafeArea(
         child: StreamBuilder<QuerySnapshot>(
           stream: _studentsStream,
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
+          builder: (context, studentSnapshot) {
+            if (studentSnapshot.hasError) {
               return const Center(child: Text("Lỗi kết nối hệ thống dữ liệu cư dân mây."));
             }
-            if (snapshot.connectionState == ConnectionState.waiting) {
+            if (studentSnapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator(color: vkuOrange));
             }
 
             // Chuyển đổi dữ liệu thô từ các Document sang List Map
-            List<dynamic> allStudents = snapshot.data!.docs.map((doc) {
+            List<dynamic> allStudents = studentSnapshot.data!.docs.map((doc) {
               Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
               data['student_code'] = data['username'] ?? "SV-VKU";
               return data;
             }).toList();
 
-            // BỘ LỌC CHI TIẾT XỬ LÝ TRỰC TIẾP TRÊN MẢNG Ở TRẠNG THÁI REALTIME
-            final filteredStudents = allStudents.where((s) {
-              final name = (s['fullname'] ?? "").toString().toLowerCase();
-              final code = (s['student_code'] ?? "").toString().toLowerCase();
-              final query = searchQuery.toLowerCase();
-              bool matchesSearch = name.contains(query) || code.contains(query);
+            // STREAM 2: TẢI REALTIME TOÀN BỘ BẢNG PROFILES VÀO BỘ NHỚ ĐỆM ĐỂ LẤY AVATAR
+            return StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance.collection('profiles').snapshots(),
+                builder: (context, profileSnapshot) {
+                  Map<String, String> avatarCacheMap = {};
+                  if (profileSnapshot.hasData) {
+                    for (var doc in profileSnapshot.data!.docs) {
+                      var pData = doc.data() as Map<String, dynamic>;
+                      String? uId = pData['user_id']?.toString();
+                      String? avUrl = pData['avatar_url']?.toString();
+                      if (uId != null && avUrl != null) {
+                        avatarCacheMap[uId] = avUrl;
+                      }
+                    }
+                  }
 
-              bool matchesStatus = true;
-              bool isPaid = _parseBool(s['is_paid']);
-              if (statusFilter == "Đã đóng tiền") matchesStatus = isPaid;
-              if (statusFilter == "Chưa đóng tiền") matchesStatus = !isPaid;
+                  // STREAM 3: TỐI ƯU SIÊU TỐC - LẮNG NGHE REALTIME TRẠNG THÁI HỌC PHÍ THEO THÁNG/NĂM ĐANG CHỌN
+                  return StreamBuilder<QuerySnapshot>(
+                      stream: FirebaseFirestore.instance
+                          .collection('room_statuses')
+                          .where('month', isEqualTo: filterMonth)
+                          .where('year', isEqualTo: filterYear)
+                          .snapshots(),
+                      builder: (context, statusSnapshot) {
+                        // Cấu trúc bộ nhớ đệm trạng thái học phí: { username/MSSV : is_paid_bool }
+                        Map<String, bool> statusCacheMap = {};
+                        if (statusSnapshot.hasData) {
+                          for (var doc in statusSnapshot.data!.docs) {
+                            var sData = doc.data() as Map<String, dynamic>;
+                            String? mssv = sData['username']?.toString();
+                            bool isPaid = sData['is_paid'] == true || sData['is_paid'].toString() == "1";
+                            if (mssv != null) {
+                              statusCacheMap[mssv] = isPaid;
+                            }
+                          }
+                        }
 
-              String roomIdFull = (s['room_id'] ?? "").toString();
-              List<String> parts = roomIdFull.split('_');
-              bool matchesDay = (selectedDay == "Tất cả Dãy") || (parts.isNotEmpty && parts[0] == selectedDay);
-              bool matchesTang = (selectedTang == "Tất cả Tầng") || (parts.length > 1 && parts[1].substring(0, 1) == selectedTang);
+                        // BỘ LỌC CHI TIẾT XỬ LÝ TRỰC TIẾP TRÊN MẢNG Ở TRẠNG THÁI REALTIME QUA RAM
+                        final filteredStudents = allStudents.where((s) {
+                          final mssvKey = s['username']?.toString() ?? "";
+                          final name = (s['fullname'] ?? "").toString().toLowerCase();
+                          final code = (s['student_code'] ?? "").toString().toLowerCase();
+                          final query = searchQuery.toLowerCase();
+                          bool matchesSearch = name.contains(query) || code.contains(query);
 
-              return matchesSearch && matchesStatus && matchesDay && matchesTang;
-            }).toList();
+                          // Lấy trạng thái đóng tiền thực tế của tháng này từ bảng room_statuses thông qua Map Cache
+                          bool isPaidInMonth = statusCacheMap[mssvKey] ?? false;
 
-            return CustomScrollView(
-              physics: const BouncingScrollPhysics(),
-              slivers: [
-                _buildSliverHeader(),
-                SliverToBoxAdapter(child: _buildMainStatCard(filteredStudents.length)),
-                SliverToBoxAdapter(child: _buildSectionHeader("BỘ LỌC TÌM KIẾM")),
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 10),
-                    child: Column(
-                      children: [
-                        _buildSearchField(),
-                        const SizedBox(height: 15),
-                        Row(
-                          children: [
-                            _buildStatusChip("Tất cả"),
-                            const SizedBox(width: 12),
-                            _buildStatusChip("Chưa đóng"),
-                            const SizedBox(width: 12),
-                            _buildStatusChip("Đã đóng"),
+                          bool matchesStatus = true;
+                          if (statusFilter == "Đã đóng tiền") matchesStatus = isPaidInMonth;
+                          if (statusFilter == "Chưa đóng tiền") matchesStatus = !isPaidInMonth;
+
+                          String roomIdFull = (s['room_id'] ?? "").toString();
+                          List<String> parts = roomIdFull.split('_');
+                          bool matchesDay = (selectedDay == "Tất cả Dãy") || (parts.isNotEmpty && parts[0] == selectedDay);
+                          bool matchesTang = (selectedTang == "Tất cả Tầng") || (parts.length > 1 && parts[1].substring(0, 1) == selectedTang);
+
+                          return matchesSearch && matchesStatus && matchesDay && matchesTang;
+                        }).toList();
+
+                        return CustomScrollView(
+                          physics: const BouncingScrollPhysics(),
+                          slivers: [
+                            _buildSliverHeader(),
+                            SliverToBoxAdapter(child: _buildMainStatCard(filteredStudents.length)),
+                            SliverToBoxAdapter(child: _buildSectionHeader("BỘ LỌC TÌM KIẾM")),
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 10),
+                                child: Column(
+                                  children: [
+                                    _buildSearchField(),
+                                    const SizedBox(height: 15),
+                                    Row(
+                                      children: [
+                                        _buildStatusChip("Tất cả"),
+                                        const SizedBox(width: 12),
+                                        _buildStatusChip("Chưa đóng"),
+                                        const SizedBox(width: 12),
+                                        _buildStatusChip("Đã đóng"),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            SliverToBoxAdapter(child: _buildSectionHeader("DANH SÁCH SINH VIÊN")),
+
+                            filteredStudents.isEmpty
+                                ? const SliverFillRemaining(
+                              hasScrollBody: false,
+                              child: Center(child: Text("Không tìm thấy sinh viên nào phù hợp.", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.bold, fontSize: 13))),
+                            )
+                                : SliverPadding(
+                              padding: const EdgeInsets.fromLTRB(25, 10, 25, 100),
+                              sliver: SliverList(
+                                delegate: SliverChildBuilderDelegate(
+                                      (context, index) => _buildStudentCard(filteredStudents[index], avatarCacheMap, statusCacheMap),
+                                  childCount: filteredStudents.length,
+                                ),
+                              ),
+                            ),
                           ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                SliverToBoxAdapter(child: _buildSectionHeader("DANH SÁCH SINH VIÊN")),
-
-                filteredStudents.isEmpty
-                    ? const SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(child: Text("Không tìm thấy sinh viên nào phù hợp.", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.bold, fontSize: 13))),
-                )
-                    : SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(25, 10, 25, 100),
-                  sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                          (context, index) => _buildStudentCard(filteredStudents[index]),
-                      childCount: filteredStudents.length,
-                    ),
-                  ),
-                ),
-              ],
+                        );
+                      }
+                  );
+                }
             );
           },
         ),
@@ -276,14 +321,21 @@ class _AdminStudentListPageState extends State<AdminStudentListPage> {
     );
   }
 
-  Widget _buildStudentCard(dynamic student) {
-    bool isPaid = _parseBool(student['is_paid']);
-    String fullAvatarUrl = student['avatar_url']?.toString() ?? "";
+  // --- ĐÃ TỐI ƯU SIÊU TỐC: Nhận cả avatar cache và status cache để vẽ giao diện tức thời bằng RAM ---
+  Widget _buildStudentCard(dynamic student, Map<String, String> avatarCache, Map<String, bool> statusCache) {
+    String mssv = student['username']?.toString() ?? "";
+    String currentUserId = student['user_id']?.toString() ?? student['id']?.toString() ?? mssv;
+
+    // Trích xuất trực tiếp ảnh và trạng thái đóng tiền từ RAM O(1)
+    String? cachedAvatarUrl = avatarCache[currentUserId];
+    bool isPaidInMonth = statusCache[mssv] ?? false;
 
     return InkWell(
       onTap: () {
-        // Khắc phục triệt để lỗi ép kiểu lồng thô Firestore bằng cách map lại tường minh
         Map<String, dynamic> studentData = Map<String, dynamic>.from(student);
+        studentData['avatar_url'] = cachedAvatarUrl;
+        // Đè luôn trạng thái đóng tiền của tháng được chọn vào object truyền đi
+        studentData['is_paid'] = isPaidInMonth;
 
         Navigator.push(
             context,
@@ -299,11 +351,11 @@ class _AdminStudentListPageState extends State<AdminStudentListPage> {
         decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(25), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10)]),
         child: Row(
           children: [
-            CircleAvatar(
+            AppAvatar(
+              avatarUrl: cachedAvatarUrl,
               radius: 30,
+              fallbackIconColor: vkuBlue,
               backgroundColor: sandBg,
-              backgroundImage: (fullAvatarUrl.isNotEmpty && fullAvatarUrl.startsWith('http')) ? NetworkImage(fullAvatarUrl) : null,
-              child: (fullAvatarUrl.isEmpty || !fullAvatarUrl.startsWith('http')) ? const Icon(Icons.person, color: vkuBlue, size: 30) : null,
             ),
             const SizedBox(width: 15),
             Expanded(
@@ -312,7 +364,7 @@ class _AdminStudentListPageState extends State<AdminStudentListPage> {
                 Text("Phòng ${student['room_id'] ?? 'Chưa xếp'} • ${student['student_code']}", style: TextStyle(color: darkText.withOpacity(0.5), fontSize: 12, fontWeight: FontWeight.w700)),
               ]),
             ),
-            Icon(isPaid ? Icons.check_circle_rounded : Icons.pending_actions_rounded, color: isPaid ? Colors.green : Colors.redAccent, size: 28),
+            Icon(isPaidInMonth ? Icons.check_circle_rounded : Icons.pending_actions_rounded, color: isPaidInMonth ? Colors.green : Colors.redAccent, size: 28),
           ],
         ),
       ),

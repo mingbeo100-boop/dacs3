@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart'; // Đưa toàn bộ luồng quản lý lên Firestore
+import '../widgets/app_avatar.dart'; // ĐÁ KẾT NỐI: Import widget dùng chung xử lý ảnh an toàn
 
 class StudentDetailAdminPage extends StatefulWidget {
   final dynamic student; // Bản ghi thông tin sinh viên được truyền từ danh sách Admin sang
@@ -34,6 +35,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
 
   // Lấy ra mã định danh sinh viên (username/MSSV) làm khóa liên kết chính
   String get studentMssv => widget.student['username']?.toString() ?? "";
+  String get studentUserId => widget.student['user_id']?.toString() ?? widget.student['id']?.toString() ?? studentMssv;
 
   @override
   void initState() {
@@ -167,15 +169,12 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Đón link URL online lưu trực tiếp từ Firebase mây
-    String fullAvatarUrl = widget.student['avatar_url']?.toString() ?? "";
-
     return Scaffold(
       backgroundColor: sandBg,
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
         slivers: [
-          _buildSliverAppBar(fullAvatarUrl),
+          _buildSliverAppBar(),
           SliverPadding(
             padding: const EdgeInsets.all(25),
             sliver: SliverList(
@@ -200,7 +199,7 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
                       Expanded(child: _buildDropdownLabel("Năm", selectedYear, years, (v) {
                         if (v != null) {
                           setState(() => selectedYear = v);
-                          _fetchStatusFromCloud(); // Đã sửa tên hàm cho đúng chuẩn
+                          _fetchStatusFromCloud();
                         }
                       })),
                     ],
@@ -248,7 +247,10 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
     );
   }
 
-  Widget _buildSliverAppBar(String url) {
+  // --- ĐÃ TỐI ƯU SIÊU TỐC: BỎ FUTUREBUILDER, ĐỌC THẲNG ẢNH ĐÃ TRUYỀN TỪ CACHE NGOÀI DANH SÁCH ---
+  Widget _buildSliverAppBar() {
+    String? cachedAvatarUrl = widget.student['avatar_url']?.toString();
+
     return SliverAppBar(
       expandedHeight: 280,
       backgroundColor: vkuBlue,
@@ -263,10 +265,11 @@ class _StudentDetailAdminPageState extends State<StudentDetailAdminPage> {
                 radius: 58, backgroundColor: vkuOrange,
                 child: CircleAvatar(
                   radius: 54, backgroundColor: vkuBlue,
-                  child: CircleAvatar(
-                    radius: 50, backgroundColor: cardBg,
-                    backgroundImage: (url.isNotEmpty && url.startsWith('http')) ? NetworkImage(url) : null,
-                    child: (url.isEmpty || !url.startsWith('http')) ? const Icon(Icons.person, size: 50, color: vkuBlue) : null,
+                  child: AppAvatar(
+                    avatarUrl: cachedAvatarUrl,
+                    radius: 50,
+                    fallbackIconColor: vkuBlue,
+                    backgroundColor: cardBg,
                   ),
                 ),
               ),

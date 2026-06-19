@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để dò bảng dữ liệu
 import 'home_page.dart';
-// import 'register_page.dart'; // Mở ra nếu bạn có file này
+import 'register_page.dart'; // Kích hoạt điều hướng sang trang đăng ký
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -16,15 +16,15 @@ class _LoginPageState extends State<LoginPage> {
   bool _isLoading = false;
   bool _isObscure = true;
 
-  // --- HỆ MÀU ĐỒNG BỘ (LÌ & SANG) ---
+  // --- HỆ MÀU ĐỒNG BỘ VỚI HỆ THỐNG SMART DORM (LÌ & SANG) ---
   static const vkuBlue = Color(0xFF002266);      // Xanh dương đậm chủ đạo
   static const sandBg = Color(0xFFF5E1C5);       // Nền màu Cát (Sand)
   static const cardBg = Color(0xFFFFF8F0);       // Màu kem nhạt cho ô input
   static const colorAccent = Color(0xFFD4A373);  // Màu nâu gỗ Pastel làm điểm nhấn
 
-  // --- LOGIC ĐĂNG NHẬP: TRUY VẤN THẲNG VÀO BẢNG FIRESTORE ---
+  // --- LOGIC ĐĂNG NHẬP THEO CẤU TRÚC TRUY VẤN QUÉT ĐIỀU KIỆN TRƯỜNG TÀI KHOẢN ---
   void _handleLogin() async {
-    final String username = _userController.text.trim(); // Ví dụ: 24ITB103
+    final String username = _userController.text.trim().toUpperCase(); // Ép in hoa chuẩn mã sinh viên dữ liệu ngầm (VD: 24ITB103)
     final String password = _passController.text.trim();
 
     if (username.isEmpty || password.isEmpty) {
@@ -41,7 +41,7 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isLoading = true);
 
     try {
-      // Tìm kiếm trong collection 'users' dòng có username và password trùng khớp
+      // 1. Quét tìm kiếm tài khoản trùng khớp điều kiện username và password trong collection 'users'
       QuerySnapshot querySnapshot = await FirebaseFirestore.instance
           .collection('users')
           .where('username', isEqualTo: username)
@@ -49,49 +49,64 @@ class _LoginPageState extends State<LoginPage> {
           .limit(1)
           .get();
 
-      // Nếu tìm thấy tài khoản hợp lệ trong bảng
+      // Nếu tìm thấy tài khoản hợp lệ
       if (querySnapshot.docs.isNotEmpty) {
         var document = querySnapshot.docs.first;
         Map<String, dynamic> userData = document.data() as Map<String, dynamic>;
-        userData['id'] = document.id; // Lưu lại Document ID làm định danh
+        userData['id'] = document.id; // Lưu lại Document ID làm định danh luân chuyển
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text("Chào mừng ${userData['fullname']} quay trở lại!"),
-              behavior: SnackBarBehavior.floating,
-              backgroundColor: colorAccent,
-            ),
-          );
+        // Xác định trường liên kết mã sinh viên để bốc avatar
+        String currentUserId = userData['username']?.toString() ?? username;
 
-          // Chuyển trực tiếp dữ liệu sinh viên bốc được từ bảng sang HomePage
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => HomePage(user: userData)),
-          );
+        // 2. KÉO SIÊU TỐC: Truy vấn đồng thời ảnh đại diện từ bảng 'profiles' dùng chung ID mã sinh viên
+        DocumentSnapshot profileDoc = await FirebaseFirestore.instance
+            .collection('profiles')
+            .doc(currentUserId)
+            .get();
+
+        if (profileDoc.exists) {
+          var profileData = profileDoc.data() as Map<String, dynamic>;
+          // Gộp chuỗi Base64 avatar động vào userData để trang Home bốc xài liền không cần load lại mạng
+          userData['avatar_url'] = profileData['avatar_url'] ?? "";
+        } else {
+          userData['avatar_url'] = "";
         }
-      } else {
-        // Nếu không có tài khoản nào trùng khớp cả username và password
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("Mã sinh viên hoặc mật khẩu không chính xác!"),
-              behavior: SnackBarBehavior.floating,
-              backgroundColor: Colors.redAccent,
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
+
+        if (!mounted) return; // Chống lỗi nếu người dùng thoát trang khi đang nạp dữ liệu
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text("Lỗi kết nối database: $e"),
+            content: Text("Chào mừng ${userData['fullname']} quay trở lại!"),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: colorAccent,
+          ),
+        );
+
+        // Chuyển tiếp trọn gói bộ dữ liệu sang HomePage sạch sẽ
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => HomePage(user: userData)),
+        );
+      } else {
+        // Nếu không có tài khoản nào trùng khớp thông tin nhập vào
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Mã sinh viên hoặc mật khẩu không chính xác!"),
             behavior: SnackBarBehavior.floating,
             backgroundColor: Colors.redAccent,
           ),
         );
       }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Lỗi kết nối database: $e"),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.redAccent,
+        ),
+      );
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -122,7 +137,6 @@ class _LoginPageState extends State<LoginPage> {
                       boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)]
                   ),
                   child: Image.asset('assets/logo_vku.png', width: 70, height: 70, errorBuilder: (context, error, stackTrace) {
-                    // Dự phòng nếu chưa có file ảnh logo trong thư mục assets
                     return const Icon(Icons.school, size: 70, color: vkuBlue);
                   }),
                 ),
@@ -133,7 +147,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 40),
 
-                // Form nhập liệu màu Sand đậm bo góc
+                // Form nhập liệu màu Sand đậm bo góc cứng cáp
                 Container(
                   padding: const EdgeInsets.all(25),
                   decoration: BoxDecoration(
@@ -157,14 +171,18 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 30),
 
-                // Dòng link điều hướng sang trang Đăng ký
+                // Dòng link điều hướng sang trang Đăng ký tài khoản mới
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const Text("Chưa có tài khoản?", style: TextStyle(color: vkuBlue, fontWeight: FontWeight.w500)),
                     TextButton(
                       onPressed: () {
-                        // Navigator.push(context, MaterialPageRoute(builder: (context) => const RegisterPage()));
+                        // KÍCH HOẠT ĐỒNG BỘ: Nhấn nút mở trực tiếp trang Đăng ký mới
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const RegisterPage()),
+                        );
                       },
                       child: const Text(
                         "Đăng ký ngay",
@@ -205,7 +223,6 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-// --- WIDGET NÚT BẤM CÓ HIỆU ỨNG CO GIÃN CHUYÊN NGHIỆP ---
 class LoginButton extends StatefulWidget {
   final VoidCallback onTap;
   final String title;

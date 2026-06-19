@@ -36,8 +36,12 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
   String get roomTopic => "vku/nhatlong/room${widget.roomName.replaceAll('_', '')}/all";
 
   Timer? _powerCounter;
-  StreamSubscription<QuerySnapshot>? _deviceSubscription; // Cổng lắng nghe Realtime của Firestore
+  StreamSubscription<QuerySnapshot>? _deviceSubscription;
   double _sessionKwh = 0.0;
+
+  // Bộ đếm tích lũy số giây hoạt động của từng thiết bị để gửi lên mây không bị lệch
+  int _activeSeconds = 0;
+
   late AnimationController _fanController, _glowController, _effectController;
 
   @override
@@ -47,16 +51,15 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     _glowController = AnimationController(duration: const Duration(seconds: 1), vsync: this)..repeat(reverse: true);
     _effectController = AnimationController(duration: const Duration(seconds: 4), vsync: this)..repeat();
 
-    _listenDevicesRealtime(); // Kích hoạt bộ thu phát tín hiệu liên tục từ bảng Firestore
+    _listenDevicesRealtime();
     _setupMqtt();
   }
 
-  // --- LOGIC MỚI: LẮNG NGHE BIẾN ĐỘNG TRẠNG THÁI THIẾT BỊ REALTIME TỪ BẢNG FIRESTORE ---
   void _listenDevicesRealtime() {
     _deviceSubscription = FirebaseFirestore.instance
         .collection('devices')
         .where('room_id', isEqualTo: widget.roomId.toString())
-        .snapshots() // Đổi thành .snapshots() để bắt sự kiện thay đổi ngay lập tức
+        .snapshots()
         .listen((querySnapshot) {
       if (!mounted) return;
 
@@ -82,7 +85,6 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     });
   }
 
-  // --- KẾT NỐI MQTT BROKER GIỮ NGUYÊN ---
   Future<void> _setupMqtt() async {
     String clientId = "NL_${widget.roomName}_${math.Random().nextInt(1000)}";
     try {
@@ -112,9 +114,7 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
     });
   }
 
-  // --- HÀM TOGGLE ĐỒNG BỘ ĐÁM MÂY VÀ BẮN GÓI TIN MQTT ---
   void _handleToggle(String deviceType, String cmd, bool currentStatus) async {
-    // 1. Optimistic UI: Phản hồi bật/tắt trên màn hình điện thoại trong 0 mili-giây
     setState(() {
       if (cmd == "LIGHT") isLightOn = !currentStatus;
       if (cmd == "FAN") {
@@ -126,7 +126,6 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
       lastMessage = "Đang gửi lệnh $cmd...";
     });
 
-    // 2. Đồng bộ ngầm trạng thái lên mạng đám mây
     String action = currentStatus ? "OFF" : "ON";
     String mqttCmd = (cmd == "LOCK") ? (currentStatus ? "LOCK_CLOSE" : "LOCK_OPEN") : "${cmd}_$action";
 
@@ -141,15 +140,11 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
           .get();
 
       if (deviceQuery.docs.isNotEmpty) {
-        // Cập nhật trạng thái chuỗi 'on' / 'off' tương thích với logic so khớp dòng 49
         await FirebaseFirestore.instance
             .collection('devices')
             .doc(deviceQuery.docs.first.id)
-            .update({
-          "status": currentStatus ? "off" : "on"
-        });
+            .update({"status": currentStatus ? "off" : "on"});
       } else {
-        // Tạo mới tài liệu thiết bị nếu phòng chưa được cấu hình dòng dữ liệu ban đầu
         await FirebaseFirestore.instance.collection('devices').add({
           "room_id": widget.roomId.toString(),
           "device_type": deviceType,
@@ -157,34 +152,89 @@ class _VirtualDevicePageState extends State<VirtualDevicePage> with TickerProvid
         });
       }
     } catch (e) {
-      debugPrint("Lỗi cập nhật trạng thái thiết bị Firestore: $e");
+      debugPrint("Lỗi cập nhật trạng thái thiết bị: $e");
     }
 
     _managePowerTimer();
   }
 
+  // --- SỬA CORE LOGIC: ĐẾM NHỊP GIÂY THỰC TẾ VÀ DÙNG LỆNH CỘNG DỒN NGUYÊN TỬ CỦA GOOGLE CHỐNG LỆCH SỐ ---
   void _managePowerTimer() {
     bool anyOn = isLightOn || isFanOn || isAcOn;
     if (anyOn) {
       if (_powerCounter == null || !_powerCounter!.isActive) {
         _powerCounter = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (mounted) {
-            setState(() {
-              double consumption = 0;
-              if (isLightOn) consumption += 20;
-              if (isFanOn) consumption += 65;
-              if (isAcOn) consumption += 1200;
-              _sessionKwh += consumption / 3600 / 1000;
-            });
+          double currentLoadWatt = 0;
+          if (isLightOn) currentLoadWatt += 20;   // Đèn 20W
+          if (isFanOn) currentLoadWatt += 65;     // Quạt 65W
+          if (isAcOn) currentLoadWatt += 1200;    // Điều hòa 1200W
+
+          // Quy đổi ra kWh chạy trực tiếp trên RAM để làm mượt giao diện hiển thị Live
+          double oneSecondKwh = currentLoadWatt / 3600 / 1000;
+
+          _sessionKwh += oneSecondKwh;
+          _activeSeconds++;
+
+          // Cập nhật con số hiển thị lên màn hình sau mỗi 2 giây để giữ hiệu năng mượt mà nhất
+          if (_activeSeconds % 2 == 0 && mounted) {
+            setState(() {});
+          }
+
+          // CỨ ĐÚNG 5 GIÂY: Gom lượng điện tiêu thụ quy đổi tính được và đẩy lên Server Google xử lý gộp
+          if (_activeSeconds >= 5) {
+            double finalKwhDelta = (currentLoadWatt * _activeSeconds) / 3600 / 1000;
+            _activeSeconds = 0; // Reset bộ đếm giây cục bộ về 0 ngay lập tức để tránh trùng lặp
+            _atomicSyncKwhToCloud(finalKwhDelta);
           }
         });
       }
-    } else { _powerCounter?.cancel(); _powerCounter = null; }
+    } else {
+      // Trước khi hủy Timer, nếu vẫn còn vài giây lẻ chưa được đồng bộ, thực hiện đẩy nốt
+      if (_activeSeconds > 0) {
+        double currentLoadWatt = 0;
+        if (isLightOn) currentLoadWatt += 20;
+        if (isFanOn) currentLoadWatt += 65;
+        if (isAcOn) currentLoadWatt += 1200;
+        double finalKwhDelta = (currentLoadWatt * _activeSeconds) / 3600 / 1000;
+        _activeSeconds = 0;
+        _atomicSyncKwhToCloud(finalKwhDelta);
+      }
+      _powerCounter?.cancel();
+      _powerCounter = null;
+    }
+  }
+
+  // THUẬT TOÁN KINH ĐIỂN CHỐNG LỆCH SỐ: Dùng FieldValue.increment() để Server Google tự thực hiện phép cộng
+  Future<void> _atomicSyncKwhToCloud(double kwhDelta) async {
+    try {
+      QuerySnapshot powerQuery = await FirebaseFirestore.instance
+          .collection('power_usages')
+          .where('room_id', isEqualTo: widget.roomName.trim())
+          .limit(1)
+          .get();
+
+      if (powerQuery.docs.isNotEmpty) {
+        String docId = powerQuery.docs.first.id;
+        double amountDelta = kwhDelta * 3500; // Đơn giá điện: 3.500đ / kWh
+
+        // Lệnh chạy bất đồng bộ chạy ngầm, không chặn UI, không bao giờ lo lệch số
+        FirebaseFirestore.instance
+            .collection('power_usages')
+            .doc(docId)
+            .update({
+          "total_kwh": FieldValue.increment(kwhDelta), // Server Google tự đọc số cũ rồi cộng thêm kwhDelta vào
+          "amount": FieldValue.increment(amountDelta), // Server Google tự tính cộng dồn số tiền
+          "updated_at": DateTime.now().toString().substring(0, 19),
+        });
+      }
+    } catch (e) {
+      debugPrint("Lỗi đồng bộ nguyên tử Firestore: $e");
+    }
   }
 
   @override
   void dispose() {
-    _deviceSubscription?.cancel(); // Huỷ cổng lắng nghe khi sinh viên thoát trang để tránh ngốn RAM
+    _deviceSubscription?.cancel();
     _fanController.dispose();
     _glowController.dispose();
     _effectController.dispose();

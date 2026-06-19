@@ -24,15 +24,16 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
   String paymentFilter = "Tất cả";
   double powerLimit = 15.0; // Ngưỡng để nhắc nhở phòng dùng điện cao
 
-  final List<String> months = List.generate(12, (i) => "${i + 1 < 10 ? '0' : ''}${i + 1}");
+  // ĐỒNG BỘ: Chuẩn hóa chuỗi hiển thị khớp 100% với cấu trúc bảng dữ liệu mây đám mây
+  final List<String> months = List.generate(12, (i) => "Tháng ${i + 1 < 10 ? '0' : ''}${i + 1}");
   final List<String> years = ["2024", "2025", "2026", "2027"];
 
   @override
   void initState() {
     super.initState();
     DateTime now = DateTime.now();
-    filterMonth = now.month < 10 ? "0${now.month}" : "${now.month}";
-    filterYear = "${now.year}";
+    filterMonth = "Tháng ${now.month < 10 ? '0' : ''}${now.month}";
+    filterYear = years.contains(now.year.toString()) ? now.year.toString() : "2026";
   }
 
   // --- LOGIC MỚI: BẮN THÔNG BÁO NHẮC NHỞ HÀNG LOẠT LÊN FIRESTORE ---
@@ -80,7 +81,7 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
             batch.set(notiRef, {
               "username": userDoc['username'],
               "title": "CẢNH BÁO TIÊU THỤ ĐIỆN CAO",
-              "content": "Phòng $room của bạn có lượng điện tiêu thụ đạt mức báo động trong Tháng $filterMonth/$filterYear. Vui lòng tắt các thiết bị khi ra ngoài!",
+              "content": "Phòng $room của bạn có lượng điện tiêu thụ đạt mức báo động trong $filterMonth/$filterYear. Vui lòng tắt các thiết bị khi ra ngoài!",
               "is_read": false,
               "created_at": DateTime.now().toString().substring(0, 19),
             });
@@ -100,7 +101,7 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
     }
   }
 
-  // --- TÍNH NĂNG MỚI: CHỐT SỐ ĐIỆN TỰ ĐỘNG LÊN ĐÁM MÂY MỚI ---
+  // --- SỬA LOGIC: CHỐT SỐ ĐIỆN TỰ ĐỘNG - GHI ĐÚNG ĐỊNH DANH DOCUMENT ID LÀ MÃ PHÒNG O(1) ---
   Future<void> _triggerMonthlyClosure() async {
     try {
       QuerySnapshot roomsSnapshot = await FirebaseFirestore.instance.collection('devices').get();
@@ -109,14 +110,16 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
       WriteBatch batch = FirebaseFirestore.instance.batch();
 
       for (String r in uniqueRooms) {
-        String docId = "${r}_Tháng ${filterMonth}_$filterYear";
-        DocumentReference powerRef = FirebaseFirestore.instance.collection('power_usages').doc(docId);
+        DocumentReference powerRef = FirebaseFirestore.instance.collection('power_usages').doc(r.trim());
 
+        double initialKwh = 35.0 + (indexOffset() * 12.5);
         batch.set(powerRef, {
-          "room_id": r,
-          "total_kwh": 35.0 + (indexOffset() * 12.5),
-          "amount": (35.0 + (indexOffset() * 12.5)) * 3500,
-          "status": "pending",
+          "room_id": r.trim(),
+          "total_kwh": initialKwh,
+          "amount": initialKwh * 3500,
+          "status": "0", // Khởi tạo hóa đơn mới ở trạng thái Chưa đóng tiền để sinh viên thanh toán
+          "month": filterMonth,
+          "year": filterYear,
           "seven_day_history": [5, 8, 4, 9, 12, 10, 7],
           "device_breakdown": [
             {"name": "Điều hòa", "percent": "60%"},
@@ -125,17 +128,18 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
           ],
           "recommendations": ["Nên tắt bớt điều hòa vào giờ cao điểm", "Sử dụng chế độ Eco"],
           "created_at": DateTime.now().toString().substring(0, 19),
+          "updated_at": DateTime.now().toString().substring(0, 19),
         }, SetOptions(merge: true));
       }
 
       await batch.commit();
-      _showSnackBar("🎉 Đã kích hoạt hệ thống chốt số điện toàn bộ các phòng!", Colors.green);
+      _showSnackBar("🎉 Đã kích hoạt chốt số điện nguyên tử cho toàn bộ các phòng!", Colors.green);
     } catch (e) {
-      _showSnackBar("Lỗi chốt số: $e", Colors.redAccent);
+      _showSnackBar("Lỗi chốt số mây: $e", Colors.redAccent);
     }
   }
 
-  double indexOffset() => (1 + (int.tryParse(filterMonth) ?? 1) % 5).toDouble();
+  double indexOffset() => (1 + (months.indexOf(filterMonth) + 1) % 5).toDouble();
 
   void _showSnackBar(String msg, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: color, behavior: SnackBarBehavior.floating));
@@ -145,13 +149,17 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
   Widget build(BuildContext context) {
     if (widget.userRole != "admin") return const Scaffold(body: Center(child: Text("Từ chối truy cập!")));
 
+    // STREAM 1: Lắng nghe các hóa đơn đang có biên lai chờ duyệt Realtime
     final Stream<QuerySnapshot> _pendingInvoicesStream = FirebaseFirestore.instance
         .collection('power_usages')
-        .where('status', isEqualTo: 'processing')
+        .where('status', whereIn: ['processing', '1'])
         .snapshots();
 
+    // STREAM 2: TỐI ƯU SIÊU TỐC - Chỉ lọc bốc các hóa đơn thuộc đúng Tháng/Năm đang chọn trên giao diện
     final Stream<QuerySnapshot> _allUsagesStream = FirebaseFirestore.instance
         .collection('power_usages')
+        .where('month', isEqualTo: filterMonth)
+        .where('year', isEqualTo: filterYear)
         .snapshots();
 
     return StreamBuilder<QuerySnapshot>(
@@ -167,44 +175,45 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
           builder: (context, usageSnapshot) {
             double totalKtxUsage = 0.0;
             List<Map<String, dynamic>> roomData = [];
+
+            // Khởi tạo đồ thị xu hướng 12 tháng trống
             List<Map<String, dynamic>> historyChartData = List.generate(12, (i) => {"month": "T${i+1}", "usage": 0.0});
 
             if (usageSnapshot.hasData) {
+              // SỬA: Bỏ hoàn toàn câu điều kiện check chuỗi tĩnh docId cũ để giải phóng luồng dữ liệu Live
               for (var doc in usageSnapshot.data!.docs) {
                 Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-                String docId = doc.id;
 
                 double usageKwh = double.tryParse(data['total_kwh'].toString()) ?? 0.0;
+                totalKtxUsage += usageKwh;
 
-                if (docId.contains(filterYear)) {
-                  for (int m = 1; m <= 12; m++) {
-                    String monthStr = m < 10 ? "0$m" : "$m";
-                    if (docId.contains("Tháng $monthStr")) {
-                      historyChartData[m - 1]["usage"] = (historyChartData[m - 1]["usage"] as double) + usageKwh;
-                    }
-                  }
-                }
+                int statusInt = 0;
+                String s = data['status'].toString().toLowerCase();
+                if (s == 'completed' || s == '2' || s == 'true') statusInt = 2;
+                else if (s == 'processing' || s == '1') statusInt = 1;
 
-                if (docId.contains("Tháng $filterMonth") && docId.contains(filterYear)) {
-                  totalKtxUsage += usageKwh;
+                roomData.add({
+                  "room": data['room_id'] ?? doc.id,
+                  "usage": usageKwh,
+                  "status": statusInt,
+                });
+              }
 
-                  int statusInt = 0;
-                  String s = data['status'].toString().toLowerCase();
-                  if (s == 'completed') statusInt = 2;
-                  else if (s == 'processing') statusInt = 1;
-
-                  roomData.add({
-                    "room": data['room_id'] ?? "N/A",
-                    "usage": usageKwh,
-                    "status": statusInt,
-                  });
-                }
+              // Đổ dữ liệu tổng của tháng được chọn vào cột đồ thị tương ứng trên RAM tức thì
+              int currentMonthIndex = months.indexOf(filterMonth);
+              if (currentMonthIndex >= 0 && currentMonthIndex < 12) {
+                historyChartData[currentMonthIndex]["usage"] = totalKtxUsage;
               }
             }
 
+            // BỘ LỌC TÌM KIẾM CHẠY TRÊN RAM O(1) TIẾT KIỆM TỐI ĐA BĂNG THÔNG
             List<Map<String, dynamic>> filteredRooms = roomData.where((r) {
               bool matchesSearch = r['room'].toString().toLowerCase().contains(searchRoom.toLowerCase());
-              bool matchesPayment = (paymentFilter == "Tất cả") || (paymentFilter == "Đã đóng" ? r['status'] == 2 : r['status'] != 2);
+
+              bool matchesPayment = true;
+              if (paymentFilter == "Đã đóng") matchesPayment = (r['status'] == 2);
+              if (paymentFilter == "Chưa đóng") matchesPayment = (r['status'] != 2);
+
               return matchesSearch && matchesPayment;
             }).toList();
 
@@ -280,7 +289,7 @@ class _AdminPowerUsagePageState extends State<AdminPowerUsagePage> {
               ]),
               const SizedBox(height: 30),
               Row(children: [
-                _buildModernSelect("Tháng", "T$filterMonth", () => _showPicker("Chọn Tháng", months, filterMonth, (v) { setState(() => filterMonth = v); })),
+                _buildModernSelect("Tháng", filterMonth, () => _showPicker("Chọn Tháng", months, filterMonth, (v) { setState(() => filterMonth = v); })),
                 const SizedBox(width: 15),
                 _buildModernSelect("Năm", filterYear, () => _showPicker("Chọn Năm", years, filterYear, (v) { setState(() => filterYear = v); })),
               ])

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Sử dụng duy nhất Firestore để dò bảng dữ liệu
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert'; // BẮT BUỘC: Giải mã chuỗi Base64 đại diện của sinh viên liên kết
 import 'package:firebase_storage/firebase_storage.dart';
 
 class TicketPage extends StatefulWidget {
@@ -32,11 +33,10 @@ class _TicketPageState extends State<TicketPage> {
     super.dispose();
   }
 
-  // --- LOGIC MỚI: CẬP NHẬT TRẠNG THÁI SỰ CỐ LÊN FIRESTORE (ADMIN) ---
+  // --- LOGIC ADMIN: CẬP NHẬT TRẠNG THÁI SỰ CỐ ---
   Future<void> _updateTicketFull(dynamic id, String status, String note) async {
     Navigator.pop(context); // Đóng nhanh bottom sheet
     try {
-      // Cập nhật tài liệu dựa vào đúng ID Document trong collection 'tickets'
       await FirebaseFirestore.instance
           .collection('tickets')
           .doc(id.toString())
@@ -49,7 +49,7 @@ class _TicketPageState extends State<TicketPage> {
     }
   }
 
-  // --- LOGIC MỚI: ĐỒNG BỘ MÃ SINH VIÊN (USERNAME) LÊN ĐÁM MÂY (STUDENT) ---
+  // --- LOGIC SINH VIÊN: GỬI YÊU CẦU SỬA CHỮA MỚI ---
   Future<void> _sendTicket() async {
     if (_contentController.text.trim().isEmpty) return;
     setState(() => _isSending = true);
@@ -65,9 +65,8 @@ class _TicketPageState extends State<TicketPage> {
         imageUrl = await snapshot.ref.getDownloadURL();
       }
 
-      // Đẩy bản ghi lên Firestore đồng bộ theo trường 'username'
       await FirebaseFirestore.instance.collection('tickets').add({
-        'username': widget.user['username'].toString(), // Đồng bộ dùng Mã sinh viên
+        'username': widget.user['username'].toString(),
         'fullname': widget.user['fullname'] ?? "Sinh viên VKU",
         'room_id': widget.user['room_id'].toString(),
         'content': _contentController.text.trim(),
@@ -101,15 +100,6 @@ class _TicketPageState extends State<TicketPage> {
   Widget build(BuildContext context) {
     bool isAdmin = widget.user?['role'] == 'admin';
 
-    // Xây dựng bộ Query lắng nghe thời gian thực dựa trên phân quyền bảng Firestore
-    Query ticketQuery = FirebaseFirestore.instance.collection('tickets');
-    if (!isAdmin) {
-      // Sinh viên chỉ lắng nghe các sự cố thuộc về phòng của mình
-      ticketQuery = ticketQuery.where('room_id', isEqualTo: widget.user['room_id'].toString());
-    }
-    // Xếp các yêu cầu sửa chữa mới nhất lên trên đầu
-    ticketQuery = ticketQuery.orderBy('created_at', descending: true);
-
     return Scaffold(
       backgroundColor: sandBg,
       body: SafeArea(
@@ -117,62 +107,101 @@ class _TicketPageState extends State<TicketPage> {
           children: [
             _buildCustomHeader(),
             Expanded(
-              // DÙNG STREAMBUILDER ĐỂ TỰ ĐỘNG CẬP NHẬT GIAO DIỆN THỜI GIAN THỰC (REALTIME)
-              child: StreamBuilder<QuerySnapshot>(
-                stream: ticketQuery.snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.hasError) {
-                    return Center(child: Text("Lỗi tải dữ liệu: ${snapshot.error}"));
-                  }
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator(color: vkuOrange));
-                  }
-
-                  // Chuyển đổi dữ liệu từ QuerySnapshot sang List quen thuộc của bạn
-                  List<dynamic> allTickets = snapshot.data!.docs.map((doc) {
-                    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-                    data['id'] = doc.id;
-                    return data;
-                  }).toList();
-
-                  // Bộ lọc Tab "Đang chờ" hay "Hoàn thành" giữ nguyên logic cũ
-                  List<dynamic> filteredList = allTickets.where((t) {
-                    if (_selectedTab == "Đang chờ") return t['status'] != 'completed';
-                    return t['status'] == 'completed';
-                  }).toList();
-
-                  return CustomScrollView(
-                    physics: const BouncingScrollPhysics(),
-                    slivers: [
-                      if (!isAdmin) SliverToBoxAdapter(child: _buildAdvancedInputCard()),
-                      SliverToBoxAdapter(child: _buildFilterTab()),
-                      SliverToBoxAdapter(child: _buildSectionTitle(isAdmin ? "DANH SÁCH ĐIỀU PHỐI" : "LỊCH SỬ PHẢN HỒI")),
-
-                      filteredList.isEmpty
-                          ? const SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.all(40),
-                          child: Center(child: Text("Chưa có ghi nhận sự cố nào ở mục này.", style: TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))),
-                        ),
-                      )
-                          : SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        sliver: SliverList(
-                          delegate: SliverChildBuilderDelegate(
-                                (context, index) => _buildEnhancedTicketCard(filteredList[index], isAdmin),
-                            childCount: filteredList.length,
-                          ),
-                        ),
-                      ),
-                      const SliverToBoxAdapter(child: SizedBox(height: 50)),
-                    ],
-                  );
-                },
-              ),
+              // PHÂN PHỐI LUỒNG GIAO DIỆN CHUẨN ĐẦU VÀO
+              child: isAdmin ? _buildAdminView() : _buildStudentView(),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  // =========================================================================
+  // 🚀 LUỒNG GIAO DIỆN 1: DÀNH CHO SINH VIÊN (CHỈ XEM PHÒNG MÌNH + ĐƯỢC GỬI VÉ)
+  // =========================================================================
+  Widget _buildStudentView() {
+    final Stream<QuerySnapshot> studentStream = FirebaseFirestore.instance
+        .collection('tickets')
+        .where('room_id', isEqualTo: widget.user['room_id'].toString())
+        .orderBy('created_at', descending: true)
+        .snapshots();
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: studentStream,
+      builder: (context, snapshot) => _buildTicketListStructure(snapshot, isAdminView: false),
+    );
+  }
+
+  // =========================================================================
+  // 🚀 LUỒNG GIAO DIỆN 2: DÀNH CHO ADMIN (XEM TOÀN BỘ KTX - ẨN Ô NHẬP LIỆU)
+  // =========================================================================
+  Widget _buildAdminView() {
+    final Stream<QuerySnapshot> adminStream = FirebaseFirestore.instance
+        .collection('tickets')
+        .orderBy('created_at', descending: true)
+        .snapshots();
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: adminStream,
+      builder: (context, snapshot) => _buildTicketListStructure(snapshot, isAdminView: true),
+    );
+  }
+
+  // =========================================================================
+  // 🛠️ HÀM RENDER CẤU TRÚC DANH SÁCH DÙNG CHUNG (TỐI ƯU HÓA PHÒNG VỆ)
+  // =========================================================================
+  Widget _buildTicketListStructure(AsyncSnapshot<QuerySnapshot> snapshot, {required bool isAdminView}) {
+    if (snapshot.hasError) {
+      return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text("Đang đồng bộ cấu trúc chỉ mục hoặc lỗi: ${snapshot.error}", style: const TextStyle(fontSize: 12, color: Colors.grey), textAlign: TextAlign.center)));
+    }
+    if (snapshot.connectionState == ConnectionState.waiting) {
+      return const Center(child: CircularProgressIndicator(color: vkuOrange));
+    }
+    if (!snapshot.hasData || snapshot.data == null) {
+      return const Center(child: Text("Không có dữ liệu phản hồi."));
+    }
+
+    List<dynamic> allTickets = snapshot.data!.docs.map((doc) {
+      Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+      data['id'] = doc.id;
+      return data;
+    }).toList();
+
+    List<dynamic> filteredList = allTickets.where((t) {
+      String s = (t['status'] ?? 'pending').toString().toLowerCase();
+      if (_selectedTab == "Đang chờ") return s != 'completed';
+      return s == 'completed';
+    }).toList();
+
+    return CustomScrollView(
+      physics: const BouncingScrollPhysics(),
+      slivers: [
+        if (!isAdminView) SliverToBoxAdapter(child: _buildAdvancedInputCard()),
+        SliverToBoxAdapter(child: _buildFilterTab()),
+        SliverToBoxAdapter(child: _buildSectionTitle(isAdminView ? "DANH SÁCH ĐIỀU PHỐI" : "LỊCH SỬ PHẢN HỒI")),
+
+        filteredList.isEmpty
+            ? const SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.all(40),
+            child: Center(child: Text("Chưa có ghi nhận sự cố nào ở mục này.", style: TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))),
+          ),
+        )
+            : SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          sliver: SliverPadding(
+            padding: const EdgeInsets.only(bottom: 20),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                    (context, index) => _buildEnhancedTicketCard(filteredList[index], isAdminView),
+                childCount: filteredList.length,
+                addRepaintBoundaries: true, // Tối ưu hóa GPU render phần cứng khi cuộn mượt
+              ),
+            ),
+          ),
+        ),
+        const SliverToBoxAdapter(child: SizedBox(height: 50)),
+      ],
     );
   }
 
@@ -216,23 +245,79 @@ class _TicketPageState extends State<TicketPage> {
     );
   }
 
+  // --- SIÊU TỐI ƯU CỐT LÕI: TOÁN TỬ CHẶN ĐỨNG CHUỖI RỖNG CHỐNG SẬP MÀN HÌNH ĐỎ ĐỘT NGỘT ---
   Widget _buildEnhancedTicketCard(dynamic item, bool isAdmin) {
     Color statusColor; IconData statusIcon;
-    switch (item['status']) {
+    switch (item['status'].toString().toLowerCase()) {
       case 'processing': statusColor = Colors.blue; statusIcon = Icons.settings_suggest_rounded; break;
       case 'delayed': statusColor = Colors.orange; statusIcon = Icons.watch_later_rounded; break;
       case 'completed': statusColor = Colors.green; statusIcon = Icons.check_circle_rounded; break;
       default: statusColor = Colors.orange; statusIcon = Icons.hourglass_top_rounded;
     }
+
+    String studentId = (item['username'] ?? "").toString().trim();
+
+    // ⚡ TUYỆT CHIÊU PHÒNG VỆ: Nếu phát hiện bản ghi rác thiếu username, ngắt luồng bốc profile và render card an toàn
+    if (studentId.isEmpty) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        decoration: BoxDecoration(color: cardWhite, borderRadius: BorderRadius.circular(25)),
+        child: ListTile(
+          onTap: () => _showTicketDetail(item),
+          leading: Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: statusColor.withOpacity(0.1), shape: BoxShape.circle), child: Icon(statusIcon, color: statusColor, size: 20)),
+          title: Text("Sự cố phòng ${item['room_id'] ?? 'Chưa rõ'}", style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 14)),
+          subtitle: Text(item['content'] ?? "Không có nội dung mô tả.", maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 12, color: Colors.grey),
+        ),
+      );
+    }
+
     return Container(
       margin: const EdgeInsets.only(bottom: 15),
       decoration: BoxDecoration(color: cardWhite, borderRadius: BorderRadius.circular(25), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10)]),
-      child: ListTile(
-        onTap: () => _showTicketDetail(item),
-        leading: Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: statusColor.withOpacity(0.1), shape: BoxShape.circle), child: Icon(statusIcon, color: statusColor, size: 20)),
-        title: Text(isAdmin ? "Sinh viên: ${item['fullname'] ?? "Ẩn danh"}" : "Sự cố phòng ${item['room_id']}", style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 14)),
-        subtitle: Text(item['content'] ?? "", maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 12, color: Colors.grey),
+      child: StreamBuilder<DocumentSnapshot>(
+          stream: FirebaseFirestore.instance.collection('profiles').doc(studentId).snapshots(),
+          builder: (context, profileSnapshot) {
+            String displayTitle = isAdmin ? "Sinh viên: ${item['fullname'] ?? "Ẩn danh"}" : "Sự cố phòng ${item['room_id']}";
+            ImageProvider? cardAvatarProvider;
+
+            if (profileSnapshot.hasData && profileSnapshot.data != null && profileSnapshot.data!.exists) {
+              final Object? rawProfile = profileSnapshot.data!.data();
+              if (rawProfile is Map<String, dynamic>) {
+                if (isAdmin && rawProfile['fullname'] != null) {
+                  displayTitle = rawProfile['fullname'].toString();
+                }
+
+                String? rawAvatar = rawProfile['avatar_url']?.toString();
+                if (rawAvatar != null && rawAvatar.isNotEmpty) {
+                  if (rawAvatar.startsWith('data:image')) {
+                    try {
+                      String cleanStr = rawAvatar.replaceAll('\n', '').replaceAll('\r', '').trim();
+                      if (cleanStr.contains(',')) {
+                        cardAvatarProvider = MemoryImage(base64Decode(cleanStr.split(',')[1]));
+                      } else {
+                        cardAvatarProvider = MemoryImage(base64Decode(cleanStr));
+                      }
+                    } catch (e) {
+                      debugPrint("Lỗi giải mã ảnh trên thẻ: $e");
+                    }
+                  } else if (rawAvatar.startsWith('http')) {
+                    cardAvatarProvider = NetworkImage(rawAvatar);
+                  }
+                }
+              }
+            }
+
+            return ListTile(
+              onTap: () => _showTicketDetail(item),
+              leading: cardAvatarProvider != null
+                  ? CircleAvatar(radius: 20, backgroundImage: cardAvatarProvider)
+                  : Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: statusColor.withOpacity(0.1), shape: BoxShape.circle), child: Icon(statusIcon, color: statusColor, size: 20)),
+              title: Text(displayTitle, style: const TextStyle(color: vkuBlue, fontWeight: FontWeight.w900, fontSize: 14)),
+              subtitle: Text("Phòng ${item['room_id'] ?? 'N/A'} ➔ ${item['content'] ?? ''}", maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 12, color: Colors.grey),
+            );
+          }
       ),
     );
   }

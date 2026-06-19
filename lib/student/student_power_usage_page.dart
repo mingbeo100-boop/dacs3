@@ -28,12 +28,10 @@ class _StudentPowerUsagePageState extends State<StudentPowerUsagePage> {
   @override
   Widget build(BuildContext context) {
     // TẠO LUỒNG LẮNG NGHE DỮ LIỆU ĐIỆN THỜI GIAN THỰC (REALTIME STREAM)
-    // Quét trong bảng 'power_usages' lấy ra hóa đơn điện mới nhất thuộc phòng này
+    // TỐI ƯU: Bỏ .orderBy và .limit mạng để triệt tiêu lỗi Index của Firebase, chuyển sang xếp bằng RAM siêu tốc
     final Stream<QuerySnapshot> _powerStream = FirebaseFirestore.instance
         .collection('power_usages')
         .where('room_id', isEqualTo: roomName.trim())
-        .orderBy('created_at', descending: true)
-        .limit(1)
         .snapshots();
 
     return Scaffold(
@@ -59,7 +57,16 @@ class _StudentPowerUsagePageState extends State<StudentPowerUsagePage> {
 
           // Nếu tìm thấy hóa đơn điện của phòng trên Firestore
           if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
-            var doc = snapshot.data!.docs.first;
+            // SỬA LOGIC RAM: Tự động sắp xếp các document theo thời gian created_at mới nhất lên đầu
+            var docs = List<DocumentSnapshot>.from(snapshot.data!.docs);
+            docs.sort((a, b) {
+              String timeA = (a.data() as Map<String, dynamic>)['created_at']?.toString() ?? "";
+              String timeB = (b.data() as Map<String, dynamic>)['created_at']?.toString() ?? "";
+              return timeB.compareTo(timeA); // Đảo chuỗi thời gian mới hơn lên trước
+            });
+
+            // Bốc lấy phần tử mới nhất sau khi đã sắp xếp hoàn tất trên bộ nhớ RAM
+            var doc = docs.first;
             Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
             invoiceId = doc.id;
 
